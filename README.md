@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="Forge" width="200">
+</p>
+
 # Forge
 
 A CLI tool for managing local development projects with Docker and Traefik. Forge handles project scaffolding, environment lifecycle, service discovery, and automatic HTTPS — so you can access your projects at clean local domains like `https://my-project.local`.
