@@ -1,0 +1,11 @@
+# Binary
+/forge
+
+# Forge project config (local per-project file)
+.forgerc.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
