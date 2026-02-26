@@ -141,19 +141,73 @@ Each project has a `.forgerc.json` in its root directory:
 }
 ```
 
-### Alias routing
+### Connecting services to the forge network
 
-The `environment.alias` section maps Docker container/service names to local domains:
+For Traefik to route traffic to your containers, they must be on the `forge-network`. Add it to your project's `docker-compose.yml`:
 
-| Alias value | Resulting domain |
-|-------------|-----------------|
-| `null` | `<code>.local` (root domain) |
-| `"backend"` | `backend.<code>.local` |
+```yaml
+services:
+  frontend:
+    image: node:20
+    networks:
+      - forge-network
+      - internal
 
-Each alias entry has:
-- `port` — The container port to proxy to
-- `alias` — Subdomain prefix (`null` for root)
-- `https` (optional) — Set to `false` to use HTTP only (defaults to HTTPS)
+  backend:
+    image: node:20
+    networks:
+      - forge-network
+
+  database:
+    image: postgres:16
+    networks:
+      - internal  # not exposed through forge
+
+networks:
+  forge-network:
+    external: true
+  internal:
+    driver: bridge
+```
+
+Services on `forge-network` are reachable by Traefik and can be assigned local domains via aliases. Services **not** on the network (like the database above) remain internal and inaccessible from the browser.
+
+`forge project status` shows a `✓` next to services connected to the forge network and `–` for those that aren't.
+
+### Domain binding
+
+`forge project bind` reads the `environment.alias` section from `.forgerc.json` and does two things:
+
+1. **Adds `/etc/hosts` entries** — maps each domain to `127.0.0.1` so your browser resolves them locally
+2. **Writes Traefik config** — creates a routing file at `~/.forge/traefik/<code>.yml` that tells Traefik how to proxy each domain to the correct container and port
+
+`forge project unbind` reverses both steps.
+
+### Alias configuration
+
+The keys in `environment.alias` are Docker Compose **service names** (the container names Traefik uses to reach them on the forge network). Each entry configures how that service is exposed:
+
+```json
+"alias": {
+  "myproject-frontend": { "port": 5173, "alias": null },
+  "myproject-backend": { "port": 3000, "alias": "backend" },
+  "myproject-api": { "port": 8080, "alias": "api", "https": false }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `port` | number | The port the container listens on. Traefik proxies to `http://<service>:<port>`. |
+| `alias` | string or null | Controls the domain name. `null` = root domain (`<code>.local`), a string = subdomain (`<alias>.<code>.local`). |
+| `https` | boolean (optional) | Whether to route through the HTTPS entrypoint with TLS. Defaults to `true`. Set to `false` for HTTP-only. |
+
+For the example above with project code `my-project`:
+
+| Service | Domain | Protocol |
+|---------|--------|----------|
+| `myproject-frontend` | `my-project.local` | HTTPS |
+| `myproject-backend` | `backend.my-project.local` | HTTPS |
+| `myproject-api` | `api.my-project.local` | HTTP |
 
 ## Data Directory
 
