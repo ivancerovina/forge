@@ -1,6 +1,7 @@
 package bind
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/ivancerovina/forge/internal/config"
@@ -13,6 +14,7 @@ type DomainBinding struct {
 	Port      int
 	Path      string
 	HTTPS     bool
+	Public    bool // cloudflare tunnel binding — no /etc/hosts, HTTP only
 }
 
 type BindResult struct {
@@ -30,8 +32,9 @@ type UnbindResult struct {
 }
 
 // ComputeBindings computes domain bindings from project alias configuration.
-// Keys are sorted for deterministic output.
-func ComputeBindings(project config.ForgeProject) []DomainBinding {
+// Keys are sorted for deterministic output. If cloudflareDomain is non-empty,
+// aliases with Cloudflare enabled will produce an additional public binding.
+func ComputeBindings(project config.ForgeProject, cloudflareDomain string) []DomainBinding {
 	// Sort alias map keys for deterministic order
 	keys := make([]string, 0, len(project.Environment.Alias))
 	for k := range project.Environment.Alias {
@@ -42,43 +45,77 @@ func ComputeBindings(project config.ForgeProject) []DomainBinding {
 	var bindings []DomainBinding
 	for _, container := range keys {
 		entry := project.Environment.Alias[container]
-		var domain string
+
+		// Local binding (always generated)
+		var localDomain string
 		if entry.Alias == nil {
-			domain = project.Code + ".local"
+			localDomain = project.Code + ".local"
 		} else {
-			domain = *entry.Alias + "." + project.Code + ".local"
+			localDomain = *entry.Alias + "." + project.Code + ".local"
 		}
 		bindings = append(bindings, DomainBinding{
-			Domain:    domain,
+			Domain:    localDomain,
 			Container: container,
 			Port:      entry.Port,
 			Path:      entry.Path,
 			HTTPS:     entry.HTTPS == nil || *entry.HTTPS,
 		})
+
+		// Cloudflare public binding (if enabled and domain configured)
+		if entry.Cloudflare != nil && *entry.Cloudflare && cloudflareDomain != "" {
+			var cfDomain string
+			if entry.Alias == nil {
+				cfDomain = project.Code + "." + cloudflareDomain
+			} else {
+				cfDomain = *entry.Alias + "." + project.Code + "." + cloudflareDomain
+			}
+			bindings = append(bindings, DomainBinding{
+				Domain:    cfDomain,
+				Container: container,
+				Port:      entry.Port,
+				Path:      entry.Path,
+				HTTPS:     false,
+				Public:    true,
+			})
+		}
 	}
 	return bindings
 }
 
 // Bind adds /etc/hosts entries and writes Traefik config for the project.
 func Bind(project config.ForgeProject) (*BindResult, error) {
-	bindings := ComputeBindings(project)
+	// Read global config for cloudflare domain
+	globalCfg, _ := config.ReadConfig()
+
+	// Validate: error if any alias has cloudflare enabled but no domain configured
+	if globalCfg.CloudflareDomain == "" {
+		for name, entry := range project.Environment.Alias {
+			if entry.Cloudflare != nil && *entry.Cloudflare {
+				return nil, fmt.Errorf("alias %q has cloudflare enabled but no cloudflare_domain is configured — run: forge tunnel set-domain <domain>", name)
+			}
+		}
+	}
+
+	bindings := ComputeBindings(project, globalCfg.CloudflareDomain)
 
 	// Regenerate certificates with per-project wildcards (non-fatal)
 	_ = system.RegenerateCerts()
 
-	// Collect domains for /etc/hosts
-	domains := make([]string, len(bindings))
-	for i, b := range bindings {
-		domains[i] = b.Domain
+	// Collect only local domains for /etc/hosts (skip public bindings)
+	var localDomains []string
+	for _, b := range bindings {
+		if !b.Public {
+			localDomains = append(localDomains, b.Domain)
+		}
 	}
 
 	// Add hosts entries
-	added, existing, warned, err := addHostsEntries(project.Code, domains)
+	added, existing, warned, err := addHostsEntries(project.Code, localDomains)
 	if err != nil {
 		return nil, err
 	}
 
-	// Write traefik config
+	// Write traefik config (all bindings — local + public)
 	if err := writeTraefikConfig(project, bindings); err != nil {
 		return nil, err
 	}

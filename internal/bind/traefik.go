@@ -71,7 +71,11 @@ func writeTraefikConfig(project config.ForgeProject, bindings []DomainBinding) e
 	hasCerts := system.CertsAvailable()
 
 	for _, b := range bindings {
-		key := project.Code + "-" + b.Container
+		serviceKey := project.Code + "-" + b.Container
+		routerKey := serviceKey
+		if b.Public {
+			routerKey = serviceKey + "-cf"
+		}
 
 		rule := fmt.Sprintf("Host(`%s`)", b.Domain)
 		if b.Path != "" {
@@ -80,12 +84,12 @@ func writeTraefikConfig(project config.ForgeProject, bindings []DomainBinding) e
 
 		router := traefikRouter{
 			Rule:    rule,
-			Service: key,
+			Service: serviceKey,
 		}
 
 		// Add StripPrefix middleware for path-based routes
 		if b.Path != "" {
-			stripKey := "strip-" + key
+			stripKey := "strip-" + routerKey
 			if cfg.HTTP.Middlewares == nil {
 				cfg.HTTP.Middlewares = make(map[string]traefikMiddleware)
 			}
@@ -97,7 +101,10 @@ func writeTraefikConfig(project config.ForgeProject, bindings []DomainBinding) e
 			router.Middlewares = append(router.Middlewares, stripKey)
 		}
 
-		if b.HTTPS && hasCerts {
+		if b.Public {
+			// Public (cloudflare) bindings: HTTP only, no TLS, no redirect
+			router.EntryPoints = []string{"web"}
+		} else if b.HTTPS && hasCerts {
 			router.EntryPoints = []string{"websecure"}
 			router.TLS = &traefikRouterTLS{}
 
@@ -115,22 +122,26 @@ func writeTraefikConfig(project config.ForgeProject, bindings []DomainBinding) e
 			}
 			httpRouter := traefikRouter{
 				Rule:        rule,
-				Service:     key,
+				Service:     serviceKey,
 				EntryPoints: []string{"web"},
 				Middlewares: []string{"redirect-to-https"},
 			}
-			cfg.HTTP.Routers[key+"-http"] = httpRouter
+			cfg.HTTP.Routers[routerKey+"-http"] = httpRouter
 		} else {
 			router.EntryPoints = []string{"web"}
 		}
 
-		cfg.HTTP.Routers[key] = router
-		cfg.HTTP.Services[key] = traefikService{
-			LoadBalancer: traefikLB{
-				Servers: []traefikServer{
-					{URL: fmt.Sprintf("http://%s:%d", b.Container, b.Port)},
+		cfg.HTTP.Routers[routerKey] = router
+
+		// Shared service — only create if not already present
+		if _, exists := cfg.HTTP.Services[serviceKey]; !exists {
+			cfg.HTTP.Services[serviceKey] = traefikService{
+				LoadBalancer: traefikLB{
+					Servers: []traefikServer{
+						{URL: fmt.Sprintf("http://%s:%d", b.Container, b.Port)},
+					},
 				},
-			},
+			}
 		}
 	}
 
