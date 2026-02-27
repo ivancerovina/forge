@@ -35,6 +35,7 @@ func main() {
 		Commands: []*cli.Command{
 			systemInitCmd(),
 			projectCmd(),
+			tunnelCmd(),
 			startCmd(),
 			stopCmd(),
 			destroyCmd(),
@@ -585,6 +586,21 @@ func projectBindCmd() *cli.Command {
 			fmt.Println(ui.TitleStyle.Render("Project domains bound!"))
 			fmt.Println()
 			for _, b := range result.Bindings {
+				domainDisplay := b.Domain
+				if b.Path != "" {
+					domainDisplay += b.Path
+				}
+
+				if b.Public {
+					// Cloudflare tunnel binding
+					fmt.Printf("  %s %s → %s\n",
+						ui.SuccessStyle.Render("✓"),
+						ui.CmdStyle.Render("http://"+domainDisplay),
+						ui.DescStyle.Render(fmt.Sprintf("%s:%d", b.Container, b.Port))+
+							" "+ui.TitleStyle.Render("(cloudflare tunnel)"))
+					continue
+				}
+
 				status := ui.SuccessStyle.Render("added")
 				for _, e := range result.ExistingDomains {
 					if e == b.Domain {
@@ -601,10 +617,6 @@ func projectBindCmd() *cli.Command {
 				scheme := "http"
 				if b.HTTPS && result.HasCerts {
 					scheme = "https"
-				}
-				domainDisplay := b.Domain
-				if b.Path != "" {
-					domainDisplay += b.Path
 				}
 				fmt.Printf("  %s %s → %s\n",
 					ui.SuccessStyle.Render("✓"),
@@ -775,6 +787,185 @@ func destroyCmd() *cli.Command {
 	}
 }
 
+// --- Tunnel commands ---
+
+func tunnelCmd() *cli.Command {
+	return &cli.Command{
+		Name:  "tunnel",
+		Usage: "Manage Cloudflare tunnel integration",
+		Commands: []*cli.Command{
+			tunnelInitCmd(),
+			tunnelStopCmd(),
+			tunnelSetDomainCmd(),
+			tunnelInfoCmd(),
+		},
+	}
+}
+
+func tunnelInitCmd() *cli.Command {
+	return &cli.Command{
+		Name:  "init",
+		Usage: "Initialize Cloudflare tunnel (runs cloudflared as a Docker container)",
+		Action: withInit(func(ctx context.Context, cmd *cli.Command) error {
+			// Validate that the tunnel token env var is set
+			if os.Getenv("CLOUDFLARE_TUNNEL_TOKEN") == "" {
+				return fmt.Errorf("$CLOUDFLARE_TUNNEL_TOKEN is not set — export it in your shell profile")
+			}
+
+			// Enable tunnel in config
+			cfg, err := config.ReadConfig()
+			if err != nil {
+				return fmt.Errorf("could not read config: %w", err)
+			}
+			cfg.CloudflareTunnel = true
+			if err := config.WriteConfig(cfg); err != nil {
+				return fmt.Errorf("could not write config: %w", err)
+			}
+
+			// Write cf-config.yml and regenerate compose file
+			forgeDir, err := config.ForgeDir()
+			if err != nil {
+				return fmt.Errorf("could not determine forge directory: %w", err)
+			}
+			if err := system.WriteCFConfig(forgeDir); err != nil {
+				return err
+			}
+			if err := system.WriteComposeFile(forgeDir); err != nil {
+				return err
+			}
+
+			// Start the stack
+			if err := system.StartTraefik(forgeDir); err != nil {
+				return err
+			}
+
+			fmt.Println(ui.TitleStyle.Render("Cloudflare tunnel initialized!"))
+			fmt.Println()
+			fmt.Println("  " + ui.SuccessStyle.Render("✓") + " " +
+				ui.CmdStyle.Render("cloudflared container") + " " +
+				ui.SuccessStyle.Render("started"))
+			fmt.Println("  " + ui.SuccessStyle.Render("✓") + " " +
+				ui.CmdStyle.Render("~/.forge/cf-config.yml") + " " +
+				ui.SuccessStyle.Render("written"))
+			return nil
+		}),
+	}
+}
+
+func tunnelStopCmd() *cli.Command {
+	return &cli.Command{
+		Name:  "stop",
+		Usage: "Stop and remove the Cloudflare tunnel container",
+		Action: withInit(func(ctx context.Context, cmd *cli.Command) error {
+			cfg, err := config.ReadConfig()
+			if err != nil {
+				return fmt.Errorf("could not read config: %w", err)
+			}
+			if !cfg.CloudflareTunnel {
+				return fmt.Errorf("tunnel is not enabled — nothing to stop")
+			}
+
+			cfg.CloudflareTunnel = false
+			if err := config.WriteConfig(cfg); err != nil {
+				return fmt.Errorf("could not write config: %w", err)
+			}
+
+			// Regenerate compose (cloudflared removed) and restart
+			forgeDir, err := config.ForgeDir()
+			if err != nil {
+				return fmt.Errorf("could not determine forge directory: %w", err)
+			}
+			if err := system.WriteComposeFile(forgeDir); err != nil {
+				return err
+			}
+			if err := system.StartTraefik(forgeDir); err != nil {
+				return err
+			}
+
+			fmt.Println(ui.TitleStyle.Render("Cloudflare tunnel stopped!"))
+			fmt.Println()
+			fmt.Println("  " + ui.SuccessStyle.Render("✓") + " " +
+				ui.CmdStyle.Render("cloudflared container") + " " +
+				ui.DescStyle.Render("removed"))
+			return nil
+		}),
+	}
+}
+
+func tunnelSetDomainCmd() *cli.Command {
+	return &cli.Command{
+		Name:      "set-domain",
+		Usage:     "Set the Cloudflare tunnel base domain",
+		ArgsUsage: "<domain>",
+		Action: withInit(func(ctx context.Context, cmd *cli.Command) error {
+			domain := cmd.Args().First()
+			if domain == "" {
+				return fmt.Errorf("domain argument is required (e.g. forge tunnel set-domain dev.example.com)")
+			}
+
+			if err := config.ValidateDomain(domain); err != nil {
+				return err
+			}
+
+			cfg, err := config.ReadConfig()
+			if err != nil {
+				return fmt.Errorf("could not read config: %w", err)
+			}
+
+			cfg.CloudflareDomain = domain
+
+			if err := config.WriteConfig(cfg); err != nil {
+				return fmt.Errorf("could not write config: %w", err)
+			}
+
+			fmt.Printf("  %s Cloudflare domain set to %s\n",
+				ui.SuccessStyle.Render("✓"),
+				ui.CmdStyle.Render(domain))
+			return nil
+		}),
+	}
+}
+
+func tunnelInfoCmd() *cli.Command {
+	return &cli.Command{
+		Name:  "info",
+		Usage: "Show current tunnel configuration",
+		Action: withInit(func(ctx context.Context, cmd *cli.Command) error {
+			cfg, err := config.ReadConfig()
+			if err != nil {
+				return fmt.Errorf("could not read config: %w", err)
+			}
+
+			fmt.Println(ui.HeadingStyle.Render("Tunnel configuration:"))
+			fmt.Println()
+			if cfg.CloudflareDomain != "" {
+				fmt.Println("  " + ui.DescStyle.Render("Cloudflare domain:") + " " + ui.CmdStyle.Render(cfg.CloudflareDomain))
+			} else {
+				fmt.Println("  " + ui.DescStyle.Render("Cloudflare domain:") + " " + ui.DescStyle.Render("not configured"))
+			}
+
+			if cfg.CloudflareTunnel {
+				fmt.Println("  " + ui.DescStyle.Render("Tunnel:") + "           " + ui.SuccessStyle.Render("enabled"))
+				state := getContainerState("forge-cloudflared")
+				fmt.Println("  " + ui.DescStyle.Render("Container:") + "        " +
+					stateIndicator(state) + " " + stateLabel(state))
+			} else {
+				fmt.Println("  " + ui.DescStyle.Render("Tunnel:") + "           " + ui.DescStyle.Render("disabled"))
+			}
+			return nil
+		}),
+	}
+}
+
+func getContainerState(containerName string) string {
+	cmd := exec.Command("docker", "inspect", "--format", "{{.State.Status}}", containerName)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // --- Alias commands ---
 
 func projectAliasCmd() *cli.Command {
@@ -798,6 +989,7 @@ func projectAliasAddCmd() *cli.Command {
 			&cli.StringFlag{Name: "alias", Aliases: []string{"a"}, Usage: "Subdomain (omit for index domain)"},
 			&cli.StringFlag{Name: "path", Usage: "Path prefix (e.g. /api)"},
 			&cli.BoolFlag{Name: "http", Usage: "HTTP only (default is HTTPS)"},
+			&cli.BoolFlag{Name: "cloudflare", Usage: "Also bind via Cloudflare tunnel"},
 			&cli.BoolFlag{Name: "force", Usage: "Overwrite existing alias"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -814,6 +1006,7 @@ func projectAliasAddCmd() *cli.Command {
 			var alias string
 			var path string
 			var https bool
+			var cloudflare bool
 
 			if interactive {
 				// Interactive mode
@@ -851,6 +1044,11 @@ func projectAliasAddCmd() *cli.Command {
 							Affirmative("Yes").
 							Negative("No").
 							Value(&https),
+						huh.NewConfirm().
+							Title("Bind via Cloudflare tunnel?").
+							Affirmative("Yes").
+							Negative("No").
+							Value(&cloudflare),
 					),
 				)
 				if err := form.Run(); err != nil {
@@ -893,6 +1091,7 @@ func projectAliasAddCmd() *cli.Command {
 				alias = cmd.String("alias")
 				path = cmd.String("path")
 				https = !cmd.Bool("http")
+				cloudflare = cmd.Bool("cloudflare")
 
 				if err := config.ValidateServiceName(serviceName); err != nil {
 					return err
@@ -925,6 +1124,9 @@ func projectAliasAddCmd() *cli.Command {
 			if !https {
 				entry.HTTPS = boolPtr(false)
 			}
+			if cloudflare {
+				entry.Cloudflare = boolPtr(true)
+			}
 
 			// Guard nil map
 			if project.Environment.Alias == nil {
@@ -951,12 +1153,18 @@ func projectAliasAddCmd() *cli.Command {
 				scheme = "HTTP"
 			}
 
-			fmt.Printf("  %s %s  %d → %s  %s\n",
+			cfLabel := ""
+			if cloudflare {
+				cfLabel = "  " + ui.TitleStyle.Render("CF")
+			}
+
+			fmt.Printf("  %s %s  %d → %s  %s%s\n",
 				ui.SuccessStyle.Render("✓"),
 				ui.CmdStyle.Render(serviceName),
 				port,
 				ui.DescStyle.Render(domain),
-				ui.TitleStyle.Render(scheme))
+				ui.TitleStyle.Render(scheme),
+				cfLabel)
 
 			return nil
 		},
@@ -1082,13 +1290,21 @@ func projectAliasInfoCmd() *cli.Command {
 					httpsLabel = "no"
 				}
 
-				fmt.Println("  " + ui.CmdStyle.Render(serviceName))
-				fmt.Println("    " + ui.DescStyle.Render("Port:") + "    " + ui.CmdStyle.Render(strconv.Itoa(entry.Port)))
-				fmt.Println("    " + ui.DescStyle.Render("Domain:") + "  " + ui.CmdStyle.Render(domain))
-				if entry.Path != "" {
-					fmt.Println("    " + ui.DescStyle.Render("Path:") + "    " + ui.CmdStyle.Render(entry.Path))
+				cfLabel := "no"
+				if entry.Cloudflare != nil && *entry.Cloudflare {
+					cfLabel = "yes"
 				}
-				fmt.Println("    " + ui.DescStyle.Render("HTTPS:") + "   " + ui.CmdStyle.Render(httpsLabel))
+
+				fmt.Println("  " + ui.CmdStyle.Render(serviceName))
+				fmt.Println("    " + ui.DescStyle.Render("Port:") + "       " + ui.CmdStyle.Render(strconv.Itoa(entry.Port)))
+				fmt.Println("    " + ui.DescStyle.Render("Domain:") + "     " + ui.CmdStyle.Render(domain))
+				if entry.Path != "" {
+					fmt.Println("    " + ui.DescStyle.Render("Path:") + "       " + ui.CmdStyle.Render(entry.Path))
+				}
+				fmt.Println("    " + ui.DescStyle.Render("HTTPS:") + "      " + ui.CmdStyle.Render(httpsLabel))
+				if entry.Cloudflare != nil && *entry.Cloudflare {
+					fmt.Println("    " + ui.DescStyle.Render("Cloudflare:") + " " + ui.CmdStyle.Render(cfLabel))
+				}
 				return nil
 			}
 
@@ -1098,7 +1314,8 @@ func projectAliasInfoCmd() *cli.Command {
 				return nil
 			}
 
-			bindings := bind.ComputeBindings(project)
+			globalCfg, _ := config.ReadConfig()
+			bindings := bind.ComputeBindings(project, globalCfg.CloudflareDomain)
 
 			// Compute column widths
 			maxName := 0
@@ -1120,14 +1337,18 @@ func projectAliasInfoCmd() *cli.Command {
 				namePad := maxName - len(b.Container) + 2
 				portPad := maxPort - len(portStr) + 2
 
-				schemeLabel := ui.TitleStyle.Render("HTTPS")
-				if !b.HTTPS {
-					schemeLabel = ui.WarningStyle.Render("HTTP")
-				}
-
 				domainDisplay := b.Domain
 				if b.Path != "" {
 					domainDisplay += b.Path
+				}
+
+				var schemeLabel string
+				if b.Public {
+					schemeLabel = ui.TitleStyle.Render("CF")
+				} else if b.HTTPS {
+					schemeLabel = ui.TitleStyle.Render("HTTPS")
+				} else {
+					schemeLabel = ui.WarningStyle.Render("HTTP")
 				}
 
 				fmt.Printf("  %s%*s%s%*s→  %s  %s\n",
