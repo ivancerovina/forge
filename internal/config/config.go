@@ -16,6 +16,7 @@ type EnvironmentCommands struct {
 type AliasEntry struct {
 	Port  int     `json:"port"`
 	Alias *string `json:"alias"`          // nil = index (just <code>.local), string = <alias>.<code>.local
+	Path  string  `json:"path,omitempty"` // e.g. "/api" — path prefix for Traefik routing
 	HTTPS *bool   `json:"https,omitempty"` // nil/true = HTTPS, false = HTTP only
 }
 
@@ -167,6 +168,15 @@ func UnregisterProject(dir string) (bool, error) {
 		return false, fmt.Errorf("could not write projects list: %w", err)
 	}
 	return true, nil
+}
+
+// WriteForgeRC writes the given ForgeProject as .forgerc.json in the given directory.
+func WriteForgeRC(dir string, project ForgeProject) error {
+	data, err := json.MarshalIndent(project, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, ".forgerc.json"), append(data, '\n'), 0o644)
 }
 
 // ResolveProjectPath resolves a path flag or positional arg to an absolute path.
