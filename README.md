@@ -4,22 +4,24 @@
 
 # Forge
 
-A CLI tool for managing local development projects with Docker and Traefik. Forge handles project scaffolding, environment lifecycle, service discovery, and automatic HTTPS — so you can access your projects at clean local domains like `https://my-project.local`.
+A CLI tool for managing local development projects with Docker Compose and Traefik. Forge handles project scaffolding, environment lifecycle, automatic service discovery on a shared Docker network, and local HTTPS — so you can access your projects at clean domains like `https://my-project.local`.
 
-## Features
+## Why Forge
 
-- **Project scaffolding** — Interactive or flag-driven project initialization with `.forgerc.json`
-- **Environment lifecycle** — Start, stop, and destroy project environments with custom commands
-- **Local domain routing** — Automatic `/etc/hosts` entries and Traefik reverse proxy configuration
-- **HTTPS by default** — Wildcard TLS certificates via `mkcert` for `*.local` domains
-- **Project registry** — Track all your forge projects across directories
-- **Service status** — See which Docker Compose services are running and connected to the forge network
+Most local dev setups involve juggling `docker compose up`, manually wiring containers to a shared network, editing `/etc/hosts`, and configuring a reverse proxy. Forge handles all of that:
+
+- **One command to start** — `forge start` runs Docker Compose, connects every service to a shared network, and shows you their status.
+- **Local domains that just work** — `forge project bind` writes `/etc/hosts` entries and generates Traefik routing config so `https://my-project.local` points to the right container and port.
+- **HTTPS by default** — Wildcard TLS certificates via [mkcert](https://github.com/FiloSottile/mkcert) with automatic HTTP-to-HTTPS redirect.
+- **No changes to your compose file** — Forge connects services to the shared network at runtime. Your `docker-compose.yml` stays clean.
+- **Project registry** — Track all your forge projects across directories with `forge project list`.
+- **Lifecycle hooks** — Run arbitrary commands before/after start, stop, and destroy operations.
 
 ## Prerequisites
 
-- [Go](https://go.dev/) 1.25+
 - [Docker](https://docs.docker.com/get-docker/) with Compose V2
 - [mkcert](https://github.com/FiloSottile/mkcert) (optional, for HTTPS)
+- [Go](https://go.dev/) 1.25+ (to build from source)
 
 ## Installation
 
@@ -29,7 +31,7 @@ cd forge
 go build -o forge
 ```
 
-Move the binary to somewhere in your `$PATH`:
+Move the binary somewhere in your `$PATH`:
 
 ```sh
 sudo mv forge /usr/local/bin/
@@ -38,20 +40,21 @@ sudo mv forge /usr/local/bin/
 ## Quick Start
 
 ```sh
-# 1. Initialize forge infrastructure (Docker network + Traefik)
+# 1. Initialize forge (creates Docker network + starts Traefik)
 forge init
 
-# 2. Create a new project
+# 2. Go to a project that has a docker-compose.yml
 cd ~/projects/my-app
-forge project init
 
-# 3. Configure your .forgerc.json with start commands and aliases
+# 3. Initialize the forge project
+forge project init -t "My App" -c my-app
 
-# 4. Start your environment
+# 4. Start the environment
 forge start
 
-# 5. Bind local domains (requires sudo)
-sudo forge project bind
+# 5. Add aliases to .forgerc.json, then bind domains
+#    (edit .forgerc.json — see "Alias configuration" below)
+forge project bind
 
 # 6. Open https://my-app.local in your browser
 ```
@@ -60,71 +63,124 @@ sudo forge project bind
 
 ### `forge init`
 
-Initialize the forge system infrastructure. Creates the `forge-network` Docker network and starts a Traefik reverse proxy container on ports 80 and 443. Generates local TLS certificates if `mkcert` is installed.
+Initialize the forge system infrastructure. This is a one-time setup that:
 
-Safe to run multiple times (idempotent).
+1. Creates the `forge-network` Docker network
+2. Generates local TLS certificates with mkcert (if installed)
+3. Writes a system-level `docker-compose.yml` to `~/.forge/`
+4. Starts a Traefik reverse proxy container (ports 80 and 443)
+
+Idempotent — safe to run multiple times.
 
 ### `forge project init`
 
-Initialize a new forge project in the current directory.
+Initialize a new forge project in the current directory. Creates a `.forgerc.json` file with project metadata and an empty environment config.
+
+**Interactive mode** (launches a form):
 
 ```sh
-# Interactive mode
 forge project init
+```
 
-# Non-interactive mode
+**Non-interactive mode** (flag-driven, no prompts):
+
+```sh
 forge project init -t "My App" -c my-app
-forge project init -t "My App" -c my-app -d "Description" -r git@github.com:user/repo.git
+forge project init -t "My App" -c my-app -d "A web application"
+forge project init -t "My App" -c my-app -r git@github.com:user/repo.git
 ```
 
 | Flag | Description |
 |------|-------------|
-| `-p, --path` | Directory to initialize in (defaults to cwd) |
 | `-t, --title` | Project name (required with `-c`) |
-| `-c, --code` | Project code (required with `-t`) |
+| `-c, --code` | Project code — lowercase, hyphens allowed (required with `-t`) |
 | `-d, --description` | Project description |
-| `-r, --remote` | Git remote URL (implies git init) |
+| `-p, --path` | Directory to initialize in (defaults to cwd) |
+| `-r, --remote` | Git remote URL (initializes git repo and sets origin) |
+| `--register` | Register the project in the global registry after init |
+| `--no-register` | Skip the registration prompt (interactive mode) |
+| `--force` | Overwrite an existing `.forgerc.json` without confirmation |
 
-### `forge start` / `forge stop` / `forge destroy`
+### `forge start`
 
-Run the corresponding commands defined in `.forgerc.json`:
+Start the project environment. Runs from the project directory (where `.forgerc.json` lives).
 
-```sh
-forge start    # Runs environment.commands.start
-forge stop     # Runs environment.commands.stop
-forge destroy  # Runs environment.commands.destroy
+1. Runs `pre_start` hooks
+2. Runs `docker compose up -d`
+3. Connects all services to `forge-network` (with DNS aliases so Traefik can reach them by service name)
+4. Runs `post_start` hooks
+5. Displays service status
+
+### `forge stop`
+
+Stop the project environment.
+
+1. Runs `pre_stop` hooks
+2. Runs `docker compose stop`
+3. Runs `post_stop` hooks
+
+Containers are stopped but not removed — `forge start` will restart them.
+
+### `forge destroy`
+
+Tear down the project environment.
+
+1. Runs `pre_destroy` hooks
+2. Runs `docker compose down`
+3. Runs `post_destroy` hooks
+
+Containers and project networks are removed.
+
+### `forge project status`
+
+Show the state of each Docker Compose service and whether it's connected to `forge-network`.
+
 ```
+Services:
+
+  ● ✓ web    running
+  ● ✓ api    running
+  ○ – db     not created
+```
+
+- `●` / `○` — running/stopped indicator
+- `✓` / `–` — connected to forge-network or not
 
 ### `forge project register` / `forge project unregister`
 
 Add or remove a project from the global registry (`~/.forge/projects.json`).
 
 ```sh
-forge project register              # Register current directory
-forge project register -p ~/myapp   # Register a specific path
-forge project unregister
+forge project register                # Register current directory
+forge project register -p ~/my-app    # Register a specific path
+forge project unregister              # Unregister current directory
 ```
 
 ### `forge project list`
 
 List all registered projects with their names and paths.
 
-### `forge project status`
-
-Show Docker Compose service status for the current project, including which services are connected to the `forge-network`.
-
-### `forge project bind` / `forge project unbind`
-
-Configure or remove local domain routing. Requires `sudo`.
-
 ```sh
-sudo forge project bind    # Add /etc/hosts entries + Traefik config
-sudo forge project unbind  # Remove /etc/hosts entries + Traefik config
+forge project list
 ```
+
+### `forge project bind`
+
+Configure local domain routing for the project. Reads `environment.alias` from `.forgerc.json` and:
+
+1. Adds `/etc/hosts` entries pointing each domain to `127.0.0.1`
+2. Writes a Traefik dynamic config file to `~/.forge/traefik/<code>.yml`
+3. Regenerates TLS certificates to cover project-specific wildcard domains
+
+Forge prompts for your password internally (via `sudo tee`) when writing `/etc/hosts`. Do not run forge itself with `sudo`.
+
+### `forge project unbind`
+
+Remove domain routing for the project. Deletes the `/etc/hosts` entries and Traefik config created by `bind`.
 
 ## Project Configuration
 
-Each project has a `.forgerc.json` in its root directory:
+Each project has a `.forgerc.json` in its root:
 
 ```json
 {
@@ -132,86 +188,94 @@ Each project has a `.forgerc.json` in its root directory:
   "description": "A web application",
   "code": "my-project",
   "environment": {
-    "commands": {
-      "start": ["docker compose up -d"],
-      "stop": ["docker compose stop"],
-      "destroy": ["docker compose down"]
+    "compose_file": "docker-compose.yml",
+    "hooks": {
+      "pre_start": ["echo 'Starting...'"],
+      "post_start": [],
+      "pre_stop": [],
+      "post_stop": [],
+      "pre_destroy": [],
+      "post_destroy": []
     },
     "alias": {
-      "myproject-frontend": { "port": 5173, "alias": null },
-      "myproject-backend": { "port": 3000, "alias": "backend" }
+      "frontend": { "port": 5173, "alias": null },
+      "backend": { "port": 3000, "alias": "api" }
     }
   }
 }
 ```
 
-### Connecting services to the forge network
+### Compose file resolution
 
-For Traefik to route traffic to your containers, they must be on the `forge-network`. Add it to your project's `docker-compose.yml`:
+The `compose_file` field is optional. If omitted, forge looks for compose files in this order:
 
-```yaml
-services:
-  frontend:
-    image: node:20
-    networks:
-      - forge-network
-      - internal
+1. `compose.yaml`
+2. `compose.yml`
+3. `docker-compose.yml`
+4. `docker-compose.yaml`
 
-  backend:
-    image: node:20
-    networks:
-      - forge-network
+### Hooks
 
-  database:
-    image: postgres:16
-    networks:
-      - internal  # not exposed through forge
+Shell commands that run before and after Docker Compose operations. Each hook is an array of commands executed sequentially via `sh -c`. If any hook command fails, the operation stops.
 
-networks:
-  forge-network:
-    external: true
-  internal:
-    driver: bridge
-```
-
-Services on `forge-network` are reachable by Traefik and can be assigned local domains via aliases. Services **not** on the network (like the database above) remain internal and inaccessible from the browser.
-
-`forge project status` shows a `✓` next to services connected to the forge network and `–` for those that aren't.
-
-### Domain binding
-
-`forge project bind` reads the `environment.alias` section from `.forgerc.json` and does two things:
-
-1. **Adds `/etc/hosts` entries** — maps each domain to `127.0.0.1` so your browser resolves them locally
-2. **Writes Traefik config** — creates a routing file at `~/.forge/traefik/<code>.yml` that tells Traefik how to proxy each domain to the correct container and port
-
-`forge project unbind` reverses both steps.
+| Hook | Runs |
+|------|------|
+| `pre_start` | Before `docker compose up -d` |
+| `post_start` | After containers start and connect to forge-network |
+| `pre_stop` | Before `docker compose stop` |
+| `post_stop` | After containers stop |
+| `pre_destroy` | Before `docker compose down` |
+| `post_destroy` | After containers are removed |
 
 ### Alias configuration
 
-The keys in `environment.alias` are Docker Compose **service names** (the container names Traefik uses to reach them on the forge network). Each entry configures how that service is exposed:
+The `alias` map controls how services are exposed through Traefik. Keys are Docker Compose **service names** — the same names defined under `services:` in your compose file.
 
 ```json
 "alias": {
-  "myproject-frontend": { "port": 5173, "alias": null },
-  "myproject-backend": { "port": 3000, "alias": "backend" },
-  "myproject-api": { "port": 8080, "alias": "api", "https": false }
+  "frontend": { "port": 5173, "alias": null },
+  "backend": { "port": 3000, "alias": "api" },
+  "docs": { "port": 8080, "alias": "docs", "https": false }
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `port` | number | The port the container listens on. Traefik proxies to `http://<service>:<port>`. |
-| `alias` | string or null | Controls the domain name. `null` = root domain (`<code>.local`), a string = subdomain (`<alias>.<code>.local`). |
-| `https` | boolean (optional) | Whether to route through the HTTPS entrypoint with TLS. Defaults to `true`. Set to `false` for HTTP-only. |
+| `port` | number | The port the container listens on internally |
+| `alias` | string or null | `null` = root domain (`<code>.local`), string = subdomain (`<alias>.<code>.local`) |
+| `https` | boolean | Route via HTTPS with TLS (default: `true`). Set `false` for HTTP-only |
 
 For the example above with project code `my-project`:
 
 | Service | Domain | Protocol |
 |---------|--------|----------|
-| `myproject-frontend` | `my-project.local` | HTTPS |
-| `myproject-backend` | `backend.my-project.local` | HTTPS |
-| `myproject-api` | `api.my-project.local` | HTTP |
+| `frontend` | `my-project.local` | HTTPS |
+| `backend` | `api.my-project.local` | HTTPS |
+| `docs` | `docs.my-project.local` | HTTP |
+
+HTTPS-enabled routes automatically redirect HTTP requests to HTTPS (301 permanent redirect).
+
+### Network connectivity
+
+You do **not** need to add `forge-network` to your compose file. When you run `forge start`, forge automatically connects each service to `forge-network` and registers DNS aliases matching the service name. This is how Traefik resolves `http://frontend:5173` or `http://backend:3000` from its routing config.
+
+Services that are only internal (like a database) can be excluded by simply not adding them to the `alias` map. They remain accessible to other services through the compose-internal network as usual.
+
+### Legacy `commands` format
+
+Older projects may use `environment.commands` instead of hooks with native compose:
+
+```json
+"environment": {
+  "commands": {
+    "start": ["docker compose up -d"],
+    "stop": ["docker compose stop"],
+    "destroy": ["docker compose down"]
+  }
+}
+```
+
+This still works but prints a deprecation warning. Migrate to `hooks` + native compose for better integration (auto network connect, service status, etc).
 
 ## Data Directory
 
@@ -222,13 +286,15 @@ Forge stores its data in `~/.forge/`:
 ├── config.json          # User configuration
 ├── projects.json        # Registered project paths
 ├── docker-compose.yml   # Traefik service definition
-├── traefik/             # Traefik dynamic configuration files
+├── traefik/             # Traefik dynamic configuration
 │   ├── _tls.yml         # TLS certificate config
 │   └── <project>.yml    # Per-project routing rules
 └── certs/               # mkcert TLS certificates
     ├── local.pem
     └── local-key.pem
 ```
+
+Created on first use by commands that need it (`forge init`, `forge project init`, etc). Read-only commands like `forge project list` will not create it if it doesn't exist.
 
 ## Development
 

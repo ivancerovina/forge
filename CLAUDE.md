@@ -5,17 +5,28 @@ CLI tool for managing projects in a development environment. Built with Go and t
 ## Tech Stack
 
 - **Language:** Go (1.25+)
-- **TUI/CLI Framework:** [charmbracelet/huh](https://github.com/charmbracelet/huh) (forms, prompts, interactive inputs)
-- **Underlying libraries:** bubbletea (Elm-architecture TUI), lipgloss (styling), bubbles (components)
+- **CLI Framework:** [urfave/cli v3](https://github.com/urfave/cli) (command routing, flags, help generation)
+- **Interactive UI:** [charmbracelet/huh](https://github.com/charmbracelet/huh) (forms, prompts — interactive mode only)
+- **Styling:** [lipgloss](https://github.com/charmbracelet/lipgloss) (terminal colors and formatting)
 - **Module path:** `github.com/ivancerovina/forge`
 
 ## Project Structure
 
-Single-module Go project. Entry point is `main.go`.
+Single-module Go project.
+
+```
+main.go                    CLI entry point (urfave/cli app, action functions, display helpers)
+internal/
+  config/                  Types (ForgeProject, Environment, etc.), config R/W, project registry
+  docker/                  Docker Compose operations, service status, forge-network connect
+  system/                  System init (Docker network, Traefik, TLS certs)
+  bind/                    Domain binding (/etc/hosts, Traefik dynamic config)
+  ui/                      lipgloss styles and colors
+```
 
 ## Data Directory
 
-`~/.forge/` — created automatically on startup if it doesn't exist. Existing files are never overwritten.
+`~/.forge/` — created on first use by commands that need it (`forge init`, `forge project init`, etc.). Read-only commands like `--help` and `forge project list` do not create it. Existing files are never overwritten.
 - `config.json` — user configuration (initialized as `{}`)
 - `projects.json` — project registry (initialized as `[]`)
 - `docker-compose.yml` — system-level compose file for Traefik (written by `forge init`)
@@ -29,10 +40,14 @@ Single-module Go project. Entry point is `main.go`.
   "description": "Some description",
   "code": "my-project",
   "environment": {
-    "commands": {
-      "start": ["docker compose up -d"],
-      "stop": ["docker compose stop"],
-      "destroy": ["docker compose down"]
+    "compose_file": "docker-compose.yml",
+    "hooks": {
+      "pre_start": [],
+      "post_start": [],
+      "pre_stop": [],
+      "post_stop": [],
+      "pre_destroy": [],
+      "post_destroy": []
     },
     "alias": {
       "myproject-frontend": { "port": 5173, "alias": null },
@@ -42,10 +57,12 @@ Single-module Go project. Entry point is `main.go`.
 }
 ```
 
-- `environment.commands` — shell commands run by `forge start`, `forge stop`, `forge destroy`
+- `environment.compose_file` — path to compose file (relative to project dir). Omit or leave empty for auto-detection (`compose.yaml` > `compose.yml` > `docker-compose.yml` > `docker-compose.yaml`).
+- `environment.hooks` — shell commands run before/after native Docker Compose operations
 - `environment.alias` — maps container/service names to Traefik routing rules:
   - `alias: null` → `<project-code>.local` (index, no subdomain)
   - `alias: "backend"` → `backend.<project-code>.local`
+- Legacy `environment.commands` format is still supported with a deprecation warning
 
 ## Commands
 
@@ -69,7 +86,26 @@ Initialize a new forge project in the current directory (creates `.forgerc.json`
 - **Interactive:** `forge project init` — launches a huh form for name, description, code
 - **Non-interactive:** `forge project init -t "Name" -c "code"` or `forge project init --title "Name" --code "code" --description "desc"`
 - Flags: `-t`/`--title` (required with -c), `-c`/`--code` (required with -t), `-d`/`--description` (optional)
+- `--register` / `--no-register` — control project registration without interactive prompt
+- `--force` — skip overwrite confirmation
 - Prompts before overwriting an existing `.forgerc.json`
+- Note: non-interactive mode (`-t`/`-c`) no longer launches any interactive prompts
+
+### `forge start` / `forge stop` / `forge destroy`
+
+- `forge start` — runs `docker compose up -d`, auto-connects services to forge-network, shows status
+- `forge stop` — runs `docker compose stop`
+- `forge destroy` — runs `docker compose down`
+- All three run pre/post hooks if configured
+
+### `forge project bind` / `forge project unbind`
+
+- No longer requires `sudo` — prompts for password internally when writing `/etc/hosts`
+- Note: forge refuses to run as root (`sudo forge ...` is blocked)
+
+### `forge project status`
+
+- Shows Docker Compose service states and forge-network connectivity
 
 ## Theme
 
@@ -83,7 +119,10 @@ Purple color palette. All styled output uses lipgloss with these colors:
 ## Code Conventions
 
 - Standard Go formatting (`gofmt` / `goimports`)
-- Handle errors explicitly; use `log.Fatal` for unrecoverable startup errors
-- Use `huh` for all interactive user input (confirms, selects, text inputs, forms)
+- Handle errors explicitly
+- Business logic packages (`config`, `docker`, `system`, `bind`) return errors — they never call `os.Exit()` or print to stdout/stderr
+- Only `main.go` handles output formatting and exit codes
+- Use `huh` for interactive prompts; never use `huh` in non-interactive (flag-driven) code paths
 - Use `lipgloss` for all styled/colored terminal output
 - Keep the main package thin; extract logic into internal packages as the project grows
+- Forge must not run as root; commands needing elevation use `sudo` internally for the specific operation
