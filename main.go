@@ -595,7 +595,7 @@ func projectBindCmd() *cli.Command {
 					// Cloudflare tunnel binding
 					fmt.Printf("  %s %s → %s\n",
 						ui.SuccessStyle.Render("✓"),
-						ui.CmdStyle.Render("http://"+domainDisplay),
+						ui.CmdStyle.Render("https://"+domainDisplay),
 						ui.DescStyle.Render(fmt.Sprintf("%s:%d", b.Container, b.Port))+
 							" "+ui.TitleStyle.Render("(cloudflare tunnel)"))
 					continue
