@@ -62,6 +62,26 @@ func ValidatePath(path string) error {
 	return nil
 }
 
+// ValidateDomain validates a domain name (e.g. "dev.example.com").
+func ValidateDomain(domain string) error {
+	if domain == "" {
+		return fmt.Errorf("domain cannot be empty")
+	}
+	parts := strings.Split(domain, ".")
+	if len(parts) < 2 {
+		return fmt.Errorf("domain must have at least two parts (e.g. dev.example.com)")
+	}
+	for _, part := range parts {
+		if part == "" {
+			return fmt.Errorf("domain contains empty label")
+		}
+		if !CodeRegexp.MatchString(part) {
+			return fmt.Errorf("domain label %q must contain only letters, numbers, and hyphens", part)
+		}
+	}
+	return nil
+}
+
 func ValidateAliasSubdomain(alias string) error {
 	if alias == "" {
 		return nil

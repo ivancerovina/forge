@@ -14,10 +14,11 @@ type EnvironmentCommands struct {
 }
 
 type AliasEntry struct {
-	Port  int     `json:"port"`
-	Alias *string `json:"alias"`          // nil = index (just <code>.local), string = <alias>.<code>.local
-	Path  string  `json:"path,omitempty"` // e.g. "/api" — path prefix for Traefik routing
-	HTTPS *bool   `json:"https,omitempty"` // nil/true = HTTPS, false = HTTP only
+	Port       int     `json:"port"`
+	Alias      *string `json:"alias"`              // nil = index (just <code>.local), string = <alias>.<code>.local
+	Path       string  `json:"path,omitempty"`     // e.g. "/api" — path prefix for Traefik routing
+	HTTPS      *bool   `json:"https,omitempty"`    // nil/true = HTTPS, false = HTTP only
+	Cloudflare *bool   `json:"cloudflare,omitempty"` // nil/false = local only, true = also bind via CF tunnel
 }
 
 type Hooks struct {
@@ -177,6 +178,50 @@ func WriteForgeRC(dir string, project ForgeProject) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, ".forgerc.json"), append(data, '\n'), 0o644)
+}
+
+// ForgeConfig represents the global forge configuration stored in ~/.forge/config.json.
+type ForgeConfig struct {
+	CloudflareDomain string `json:"cloudflare_domain,omitempty"`
+	CloudflareTunnel bool   `json:"cloudflare_tunnel,omitempty"` // enables cloudflared container
+}
+
+func configFilePath() (string, error) {
+	forgeDir, err := ForgeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(forgeDir, "config.json"), nil
+}
+
+// ReadConfig reads the global forge configuration from ~/.forge/config.json.
+func ReadConfig() (ForgeConfig, error) {
+	path, err := configFilePath()
+	if err != nil {
+		return ForgeConfig{}, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ForgeConfig{}, err
+	}
+	var cfg ForgeConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ForgeConfig{}, err
+	}
+	return cfg, nil
+}
+
+// WriteConfig writes the global forge configuration to ~/.forge/config.json.
+func WriteConfig(cfg ForgeConfig) error {
+	path, err := configFilePath()
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
 
 // ResolveProjectPath resolves a path flag or positional arg to an absolute path.
