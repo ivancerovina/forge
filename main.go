@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -226,6 +228,7 @@ func projectCmd() *cli.Command {
 			projectStatusCmd(),
 			projectBindCmd(),
 			projectUnbindCmd(),
+			projectAliasCmd(),
 		},
 	}
 }
@@ -333,12 +336,7 @@ func projectInitCmd() *cli.Command {
 				},
 			}
 
-			data, err := json.MarshalIndent(project, "", "  ")
-			if err != nil {
-				return err
-			}
-
-			if err := os.WriteFile(".forgerc.json", append(data, '\n'), 0o644); err != nil {
+			if err := config.WriteForgeRC(".", project); err != nil {
 				return err
 			}
 
@@ -604,9 +602,13 @@ func projectBindCmd() *cli.Command {
 				if b.HTTPS && result.HasCerts {
 					scheme = "https"
 				}
+				domainDisplay := b.Domain
+				if b.Path != "" {
+					domainDisplay += b.Path
+				}
 				fmt.Printf("  %s %s → %s\n",
 					ui.SuccessStyle.Render("✓"),
-					ui.CmdStyle.Render(scheme+"://"+b.Domain),
+					ui.CmdStyle.Render(scheme+"://"+domainDisplay),
 					ui.DescStyle.Render(fmt.Sprintf("%s:%d", b.Container, b.Port))+
 						" "+status)
 			}
@@ -772,6 +774,380 @@ func destroyCmd() *cli.Command {
 		},
 	}
 }
+
+// --- Alias commands ---
+
+func projectAliasCmd() *cli.Command {
+	return &cli.Command{
+		Name:  "alias",
+		Usage: "Manage project service aliases",
+		Commands: []*cli.Command{
+			projectAliasAddCmd(),
+			projectAliasRemoveCmd(),
+			projectAliasInfoCmd(),
+		},
+	}
+}
+
+func projectAliasAddCmd() *cli.Command {
+	return &cli.Command{
+		Name:  "add",
+		Usage: "Add a service alias",
+		Flags: []cli.Flag{
+			&cli.IntFlag{Name: "port", Aliases: []string{"P"}, Usage: "Service port"},
+			&cli.StringFlag{Name: "alias", Aliases: []string{"a"}, Usage: "Subdomain (omit for index domain)"},
+			&cli.StringFlag{Name: "path", Usage: "Path prefix (e.g. /api)"},
+			&cli.BoolFlag{Name: "http", Usage: "HTTP only (default is HTTPS)"},
+			&cli.BoolFlag{Name: "force", Usage: "Overwrite existing alias"},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			project, err := config.ReadForgeRC(".")
+			if err != nil {
+				return fmt.Errorf("no .forgerc.json found in the current directory")
+			}
+
+			serviceName := cmd.Args().First()
+			portSet := cmd.IsSet("port")
+			interactive := serviceName == "" && !portSet
+
+			var port int
+			var alias string
+			var path string
+			var https bool
+
+			if interactive {
+				// Interactive mode
+				var portStr string
+				https = true
+
+				form := huh.NewForm(
+					huh.NewGroup(
+						huh.NewInput().
+							Title("Service name").
+							Value(&serviceName).
+							Validate(func(s string) error { return config.ValidateServiceName(s) }),
+						huh.NewInput().
+							Title("Port").
+							Value(&portStr).
+							Validate(func(s string) error {
+								p, err := strconv.Atoi(s)
+								if err != nil {
+									return fmt.Errorf("port must be a number")
+								}
+								return config.ValidatePort(p)
+							}),
+						huh.NewInput().
+							Title("Alias subdomain").
+							Description("Leave empty for index domain (<code>.local)").
+							Value(&alias).
+							Validate(func(s string) error { return config.ValidateAliasSubdomain(s) }),
+						huh.NewInput().
+							Title("Path prefix").
+							Description("Leave empty for no path prefix (e.g. /api)").
+							Value(&path).
+							Validate(func(s string) error { return config.ValidatePath(s) }),
+						huh.NewConfirm().
+							Title("Enable HTTPS?").
+							Affirmative("Yes").
+							Negative("No").
+							Value(&https),
+					),
+				)
+				if err := form.Run(); err != nil {
+					return err
+				}
+
+				port, _ = strconv.Atoi(portStr)
+
+				// Check for existing entry
+				if project.Environment.Alias != nil {
+					if _, exists := project.Environment.Alias[serviceName]; exists {
+						var overwrite bool
+						confirmForm := huh.NewForm(
+							huh.NewGroup(
+								huh.NewConfirm().
+									Title(fmt.Sprintf("Alias for %q already exists. Overwrite?", serviceName)).
+									Affirmative("Yes").
+									Negative("No").
+									Value(&overwrite),
+							),
+						)
+						if err := confirmForm.Run(); err != nil {
+							return err
+						}
+						if !overwrite {
+							return nil
+						}
+					}
+				}
+			} else {
+				// Non-interactive mode
+				if serviceName == "" {
+					return fmt.Errorf("service name is required as a positional argument")
+				}
+				if !portSet {
+					return fmt.Errorf("--port is required")
+				}
+
+				port = int(cmd.Int("port"))
+				alias = cmd.String("alias")
+				path = cmd.String("path")
+				https = !cmd.Bool("http")
+
+				if err := config.ValidateServiceName(serviceName); err != nil {
+					return err
+				}
+				if err := config.ValidatePort(port); err != nil {
+					return err
+				}
+				if err := config.ValidateAliasSubdomain(alias); err != nil {
+					return err
+				}
+				if err := config.ValidatePath(path); err != nil {
+					return err
+				}
+
+				// Check for existing entry
+				if project.Environment.Alias != nil {
+					if _, exists := project.Environment.Alias[serviceName]; exists && !cmd.Bool("force") {
+						return fmt.Errorf("alias for %q already exists (use --force to overwrite)", serviceName)
+					}
+				}
+			}
+
+			// Build entry
+			entry := config.AliasEntry{Port: port, Path: path}
+			if alias == "" {
+				entry.Alias = nil
+			} else {
+				entry.Alias = stringPtr(alias)
+			}
+			if !https {
+				entry.HTTPS = boolPtr(false)
+			}
+
+			// Guard nil map
+			if project.Environment.Alias == nil {
+				project.Environment.Alias = make(map[string]config.AliasEntry)
+			}
+			project.Environment.Alias[serviceName] = entry
+
+			if err := config.WriteForgeRC(".", project); err != nil {
+				return err
+			}
+
+			// Compute domain for display
+			var domain string
+			if alias == "" {
+				domain = project.Code + ".local"
+			} else {
+				domain = alias + "." + project.Code + ".local"
+			}
+			if path != "" {
+				domain += path
+			}
+			scheme := "HTTPS"
+			if !https {
+				scheme = "HTTP"
+			}
+
+			fmt.Printf("  %s %s  %d → %s  %s\n",
+				ui.SuccessStyle.Render("✓"),
+				ui.CmdStyle.Render(serviceName),
+				port,
+				ui.DescStyle.Render(domain),
+				ui.TitleStyle.Render(scheme))
+
+			return nil
+		},
+	}
+}
+
+func projectAliasRemoveCmd() *cli.Command {
+	return &cli.Command{
+		Name:    "remove",
+		Aliases: []string{"rm"},
+		Usage:   "Remove a service alias",
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			project, err := config.ReadForgeRC(".")
+			if err != nil {
+				return fmt.Errorf("no .forgerc.json found in the current directory")
+			}
+
+			serviceName := cmd.Args().First()
+			interactive := serviceName == ""
+
+			if interactive {
+				if len(project.Environment.Alias) == 0 {
+					fmt.Println(ui.DescStyle.Render("No aliases defined."))
+					return nil
+				}
+
+				// Build sorted list of service names
+				names := make([]string, 0, len(project.Environment.Alias))
+				for k := range project.Environment.Alias {
+					names = append(names, k)
+				}
+				sort.Strings(names)
+
+				options := make([]huh.Option[string], len(names))
+				for i, n := range names {
+					options[i] = huh.NewOption(n, n)
+				}
+
+				form := huh.NewForm(
+					huh.NewGroup(
+						huh.NewSelect[string]().
+							Title("Select alias to remove").
+							Options(options...).
+							Value(&serviceName),
+					),
+				)
+				if err := form.Run(); err != nil {
+					return err
+				}
+
+				var confirm bool
+				confirmForm := huh.NewForm(
+					huh.NewGroup(
+						huh.NewConfirm().
+							Title(fmt.Sprintf("Remove alias for %q?", serviceName)).
+							Affirmative("Yes").
+							Negative("No").
+							Value(&confirm),
+					),
+				)
+				if err := confirmForm.Run(); err != nil {
+					return err
+				}
+				if !confirm {
+					return nil
+				}
+			} else {
+				if project.Environment.Alias == nil {
+					return fmt.Errorf("alias %q not found", serviceName)
+				}
+				if _, exists := project.Environment.Alias[serviceName]; !exists {
+					return fmt.Errorf("alias %q not found", serviceName)
+				}
+			}
+
+			delete(project.Environment.Alias, serviceName)
+
+			if err := config.WriteForgeRC(".", project); err != nil {
+				return err
+			}
+
+			fmt.Printf("  %s %s  %s\n",
+				ui.SuccessStyle.Render("✓"),
+				ui.CmdStyle.Render(serviceName),
+				ui.DescStyle.Render("removed"))
+
+			return nil
+		},
+	}
+}
+
+func projectAliasInfoCmd() *cli.Command {
+	return &cli.Command{
+		Name:  "info",
+		Usage: "Show alias details",
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			project, err := config.ReadForgeRC(".")
+			if err != nil {
+				return fmt.Errorf("no .forgerc.json found in the current directory")
+			}
+
+			serviceName := cmd.Args().First()
+
+			if serviceName != "" {
+				// Show single alias
+				if project.Environment.Alias == nil {
+					return fmt.Errorf("alias %q not found", serviceName)
+				}
+				entry, exists := project.Environment.Alias[serviceName]
+				if !exists {
+					return fmt.Errorf("alias %q not found", serviceName)
+				}
+
+				var domain string
+				if entry.Alias == nil {
+					domain = project.Code + ".local"
+				} else {
+					domain = *entry.Alias + "." + project.Code + ".local"
+				}
+				https := entry.HTTPS == nil || *entry.HTTPS
+				httpsLabel := "yes"
+				if !https {
+					httpsLabel = "no"
+				}
+
+				fmt.Println("  " + ui.CmdStyle.Render(serviceName))
+				fmt.Println("    " + ui.DescStyle.Render("Port:") + "    " + ui.CmdStyle.Render(strconv.Itoa(entry.Port)))
+				fmt.Println("    " + ui.DescStyle.Render("Domain:") + "  " + ui.CmdStyle.Render(domain))
+				if entry.Path != "" {
+					fmt.Println("    " + ui.DescStyle.Render("Path:") + "    " + ui.CmdStyle.Render(entry.Path))
+				}
+				fmt.Println("    " + ui.DescStyle.Render("HTTPS:") + "   " + ui.CmdStyle.Render(httpsLabel))
+				return nil
+			}
+
+			// Show all aliases
+			if len(project.Environment.Alias) == 0 {
+				fmt.Println(ui.DescStyle.Render("No aliases defined."))
+				return nil
+			}
+
+			bindings := bind.ComputeBindings(project)
+
+			// Compute column widths
+			maxName := 0
+			maxPort := 0
+			for _, b := range bindings {
+				if len(b.Container) > maxName {
+					maxName = len(b.Container)
+				}
+				portStr := strconv.Itoa(b.Port)
+				if len(portStr) > maxPort {
+					maxPort = len(portStr)
+				}
+			}
+
+			fmt.Println(ui.HeadingStyle.Render("Aliases:"))
+			fmt.Println()
+			for _, b := range bindings {
+				portStr := strconv.Itoa(b.Port)
+				namePad := maxName - len(b.Container) + 2
+				portPad := maxPort - len(portStr) + 2
+
+				schemeLabel := ui.TitleStyle.Render("HTTPS")
+				if !b.HTTPS {
+					schemeLabel = ui.WarningStyle.Render("HTTP")
+				}
+
+				domainDisplay := b.Domain
+				if b.Path != "" {
+					domainDisplay += b.Path
+				}
+
+				fmt.Printf("  %s%*s%s%*s→  %s  %s\n",
+					ui.CmdStyle.Render(b.Container),
+					namePad, "",
+					ui.CmdStyle.Render(portStr),
+					portPad, "",
+					ui.DescStyle.Render(domainDisplay),
+					schemeLabel)
+			}
+
+			return nil
+		},
+	}
+}
+
+// --- Pointer helpers ---
+
+func stringPtr(s string) *string { return &s }
+func boolPtr(b bool) *bool { return &b }
 
 // --- Git helpers ---
 
