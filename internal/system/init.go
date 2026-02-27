@@ -68,6 +68,20 @@ func Init() (*InitResult, error) {
 		Message: traefikMsg,
 	})
 
+	// 4. Report cloudflared status (if tunnel enabled)
+	cfg, _ := config.ReadConfig()
+	if cfg.CloudflareTunnel {
+		cfMsg := traefikMsg // same compose stack
+		if traefikOK {
+			cfMsg = "started"
+		}
+		result.Steps = append(result.Steps, StepResult{
+			Name:    "forge-cloudflared",
+			OK:      traefikOK,
+			Message: cfMsg,
+		})
+	}
+
 	return result, nil
 }
 
@@ -202,8 +216,23 @@ func WriteTLSConfig(forgeDir string) error {
 	return nil
 }
 
-func forgeComposeYAML(traefikDir, certsDir string) string {
-	return `services:
+// WriteCFConfig writes the cloudflared ingress config to ~/.forge/cf-config.yml.
+func WriteCFConfig(forgeDir string) error {
+	cfConfig := `ingress:
+  - service: http://forge-traefik:80
+`
+	path := filepath.Join(forgeDir, "cf-config.yml")
+	if err := os.WriteFile(path, []byte(cfConfig), 0o644); err != nil {
+		return fmt.Errorf("failed to write cf-config.yml: %w", err)
+	}
+	return nil
+}
+
+func forgeComposeYAML(forgeDir string, tunnelEnabled bool) string {
+	traefikDir := filepath.Join(forgeDir, "traefik")
+	certsDir := filepath.Join(forgeDir, "certs")
+
+	yaml := `services:
   traefik:
     image: traefik:v3.3
     container_name: forge-traefik
@@ -224,28 +253,49 @@ func forgeComposeYAML(traefikDir, certsDir string) string {
       - ` + certsDir + `:/etc/traefik/certs:ro
     networks:
       - forge-network
+`
 
+	if tunnelEnabled {
+		cfConfigPath := filepath.Join(forgeDir, "cf-config.yml")
+		yaml += `
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: forge-cloudflared
+    restart: unless-stopped
+    command: tunnel --config /etc/cloudflared/config.yml run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    volumes:
+      - ` + cfConfigPath + `:/etc/cloudflared/config.yml:ro
+    networks:
+      - forge-network
+    depends_on:
+      - traefik
+`
+	}
+
+	yaml += `
 networks:
   forge-network:
     external: true
 `
+	return yaml
 }
 
 // WriteComposeFile writes the system-level docker-compose.yml to the forge directory.
 func WriteComposeFile(forgeDir string) error {
-	traefikDir := filepath.Join(forgeDir, "traefik")
-	certsDir := filepath.Join(forgeDir, "certs")
 	path := filepath.Join(forgeDir, "docker-compose.yml")
-	if err := os.WriteFile(path, []byte(forgeComposeYAML(traefikDir, certsDir)), 0o644); err != nil {
+
+	cfg, _ := config.ReadConfig() // ignore error: missing config = no tunnel
+
+	if err := os.WriteFile(path, []byte(forgeComposeYAML(forgeDir, cfg.CloudflareTunnel)), 0o644); err != nil {
 		return fmt.Errorf("failed to write docker-compose.yml: %w", err)
 	}
 	return nil
 }
 
-// StartTraefik starts the Traefik container via docker compose.
+// StartTraefik starts the forge system stack (Traefik + optional cloudflared) via docker compose.
 func StartTraefik(forgeDir string) error {
 	composePath := filepath.Join(forgeDir, "docker-compose.yml")
-	up := exec.Command("docker", "compose", "-f", composePath, "up", "-d")
+	up := exec.Command("docker", "compose", "-f", composePath, "up", "-d", "--remove-orphans")
 	up.Stdout = nil
 	up.Stderr = nil
 	if err := up.Run(); err != nil {
