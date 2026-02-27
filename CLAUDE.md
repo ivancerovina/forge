@@ -27,9 +27,10 @@ internal/
 ## Data Directory
 
 `~/.forge/` — created on first use by commands that need it (`forge init`, `forge project init`, etc.). Read-only commands like `--help` and `forge project list` do not create it. Existing files are never overwritten.
-- `config.json` — user configuration (initialized as `{}`)
+- `config.json` — global configuration (`cloudflare_domain`, `cloudflare_tunnel` flag)
 - `projects.json` — project registry (initialized as `[]`)
-- `docker-compose.yml` — system-level compose file for Traefik (written by `forge init`)
+- `docker-compose.yml` — system-level compose file for Traefik + optional cloudflared (written by `forge init`)
+- `cf-config.yml` — cloudflared ingress config (written by `forge tunnel init`)
 
 ## Project File
 
@@ -50,8 +51,8 @@ internal/
       "post_destroy": []
     },
     "alias": {
-      "myproject-frontend": { "port": 5173, "alias": null },
-      "myproject-backend": { "port": 3000, "alias": "backend" }
+      "myproject-frontend": { "port": 5173, "alias": null, "cloudflare": true },
+      "myproject-backend": { "port": 3000, "alias": "backend", "path": "/api" }
     }
   }
 }
@@ -62,6 +63,8 @@ internal/
 - `environment.alias` — maps container/service names to Traefik routing rules:
   - `alias: null` → `<project-code>.local` (index, no subdomain)
   - `alias: "backend"` → `backend.<project-code>.local`
+  - `path: "/api"` → path prefix routing with StripPrefix middleware
+  - `cloudflare: true` → also creates a public Traefik router via Cloudflare tunnel
 - Legacy `environment.commands` format is still supported with a deprecation warning
 
 ## Build & Install
@@ -76,10 +79,10 @@ go mod tidy        # Sync dependencies
 
 ### `forge init`
 
-Initialize the forge system infrastructure. Creates the `forge-network` Docker network and starts a Traefik reverse proxy container (ports 80/443). Idempotent — safe to run multiple times.
+Initialize the forge system infrastructure. Creates the `forge-network` Docker network and starts a Traefik reverse proxy container (ports 80/443). If a Cloudflare tunnel is enabled, also starts the cloudflared container. Idempotent — safe to run multiple times.
 
-- Writes `~/.forge/docker-compose.yml` with the Traefik service
-- Runs `docker compose up -d` to start Traefik
+- Writes `~/.forge/docker-compose.yml` with the Traefik service (+ cloudflared if tunnel enabled)
+- Runs `docker compose up -d` to start the stack
 
 ### `forge project init`
 
@@ -102,12 +105,46 @@ Initialize a new forge project in the current directory (creates `.forgerc.json`
 
 ### `forge project bind` / `forge project unbind`
 
+- Generates Traefik routing config for all aliases (local `.local` domains + Cloudflare public domains)
+- Only local domains are added to `/etc/hosts` (public CF domains are routed through the tunnel)
 - No longer requires `sudo` — prompts for password internally when writing `/etc/hosts`
 - Note: forge refuses to run as root (`sudo forge ...` is blocked)
 
 ### `forge project status`
 
 - Shows Docker Compose service states and forge-network connectivity
+
+### `forge project alias add` / `forge project alias remove` / `forge project alias info`
+
+- `forge project alias add <service> --port <port>` — add a service alias (supports `--alias`, `--path`, `--http`, `--cloudflare`, `--force`)
+- `forge project alias remove <service>` — remove a service alias
+- `forge project alias info [service]` — show alias details (single or all)
+- All three support interactive mode (run without arguments)
+
+### `forge tunnel init`
+
+Initialize the Cloudflare tunnel. Requires `$CLOUDFLARE_TUNNEL_TOKEN` to be set in the environment.
+
+- Sets `cloudflare_tunnel: true` in `~/.forge/config.json`
+- Writes `~/.forge/cf-config.yml` with catch-all ingress to `http://forge-traefik:80`
+- Adds cloudflared container to the system compose file
+- Starts the container
+
+### `forge tunnel stop`
+
+Stop and remove the cloudflared container.
+
+- Clears the tunnel flag from config
+- Regenerates compose file without cloudflared
+- Removes the orphaned container
+
+### `forge tunnel set-domain <domain>`
+
+Set the Cloudflare base domain (e.g. `dev.example.com`). Aliases with `cloudflare: true` will generate public Traefik routers using this domain.
+
+### `forge tunnel info`
+
+Show current tunnel configuration: domain, enabled status, container state.
 
 ## Theme
 

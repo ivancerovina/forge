@@ -4,7 +4,7 @@
 
 # Forge
 
-A CLI tool for managing local development projects with Docker Compose and Traefik. Forge handles project scaffolding, environment lifecycle, automatic service discovery on a shared Docker network, and local HTTPS — so you can access your projects at clean domains like `https://my-project.local`.
+A CLI tool for managing local development projects with Docker Compose and Traefik. Forge handles project scaffolding, environment lifecycle, automatic service discovery on a shared Docker network, local HTTPS, and optional public access via Cloudflare Tunnels — so you can access your projects at clean domains like `https://my-project.local` or `https://my-project.dev.example.com`.
 
 ## Why Forge
 
@@ -14,6 +14,8 @@ Most local dev setups involve juggling `docker compose up`, manually wiring cont
 - **Local domains that just work** — `forge project bind` writes `/etc/hosts` entries and generates Traefik routing config so `https://my-project.local` points to the right container and port.
 - **HTTPS by default** — Wildcard TLS certificates via [mkcert](https://github.com/FiloSottile/mkcert) with automatic HTTP-to-HTTPS redirect.
 - **No changes to your compose file** — Forge connects services to the shared network at runtime. Your `docker-compose.yml` stays clean.
+- **Path-based routing** — Route `/api` to a backend and `/` to a frontend on the same domain, with automatic path stripping.
+- **Cloudflare Tunnel support** — Optionally expose services publicly through a Cloudflare Tunnel with zero extra configuration in your compose file.
 - **Project registry** — Track all your forge projects across directories with `forge project list`.
 - **Lifecycle hooks** — Run arbitrary commands before/after start, stop, and destroy operations.
 
@@ -49,14 +51,30 @@ cd ~/projects/my-app
 # 3. Initialize the forge project
 forge project init -t "My App" -c my-app
 
-# 4. Start the environment
-forge start
+# 4. Add service aliases
+forge project alias add frontend --port 5173
+forge project alias add backend --port 3000 --alias api --path /api
 
-# 5. Add aliases to .forgerc.json, then bind domains
-#    (edit .forgerc.json — see "Alias configuration" below)
+# 5. Start the environment and bind domains
+forge start
 forge project bind
 
 # 6. Open https://my-app.local in your browser
+```
+
+### Optional: Public access via Cloudflare Tunnel
+
+```sh
+# Set your tunnel token and base domain
+export CLOUDFLARE_TUNNEL_TOKEN="eyJ..."  # Add to ~/.zshrc
+forge tunnel set-domain dev.example.com
+forge tunnel init
+
+# Enable cloudflare on specific aliases
+forge project alias add frontend --port 5173 --cloudflare --force
+forge project bind
+
+# Access at https://my-app.dev.example.com (via tunnel)
 ```
 
 ## Commands
@@ -69,6 +87,7 @@ Initialize the forge system infrastructure. This is a one-time setup that:
 2. Generates local TLS certificates with mkcert (if installed)
 3. Writes a system-level `docker-compose.yml` to `~/.forge/`
 4. Starts a Traefik reverse proxy container (ports 80 and 443)
+5. Starts the cloudflared container (if tunnel is enabled)
 
 Idempotent — safe to run multiple times.
 
@@ -166,10 +185,10 @@ forge project list
 
 ### `forge project bind`
 
-Configure local domain routing for the project. Reads `environment.alias` from `.forgerc.json` and:
+Configure domain routing for the project. Reads `environment.alias` from `.forgerc.json` and:
 
-1. Adds `/etc/hosts` entries pointing each domain to `127.0.0.1`
-2. Writes a Traefik dynamic config file to `~/.forge/traefik/<code>.yml`
+1. Adds `/etc/hosts` entries for local `.local` domains (public CF domains are not added)
+2. Writes a Traefik dynamic config file to `~/.forge/traefik/<code>.yml` with both local and Cloudflare routers
 3. Regenerates TLS certificates to cover project-specific wildcard domains
 
 Forge prompts for your password internally (via `sudo tee`) when writing `/etc/hosts`. Do not run forge itself with `sudo`.
@@ -177,6 +196,86 @@ Forge prompts for your password internally (via `sudo tee`) when writing `/etc/h
 ### `forge project unbind`
 
 Remove domain routing for the project. Deletes the `/etc/hosts` entries and Traefik config created by `bind`.
+
+### `forge project alias add`
+
+Add a service alias to the project.
+
+**Interactive mode:**
+
+```sh
+forge project alias add
+```
+
+**Non-interactive mode:**
+
+```sh
+forge project alias add frontend --port 5173
+forge project alias add backend --port 3000 --alias api --path /api
+forge project alias add frontend --port 5173 --cloudflare
+```
+
+| Flag | Description |
+|------|-------------|
+| `--port, -P` | Service port (required) |
+| `--alias, -a` | Subdomain (omit for root domain) |
+| `--path` | Path prefix (e.g. `/api`) with automatic StripPrefix |
+| `--http` | HTTP only (default is HTTPS) |
+| `--cloudflare` | Also bind via Cloudflare tunnel |
+| `--force` | Overwrite existing alias |
+
+### `forge project alias remove`
+
+Remove a service alias. Interactive mode shows a selection list.
+
+```sh
+forge project alias remove frontend
+```
+
+### `forge project alias info`
+
+Show alias details for a single service or all aliases.
+
+```sh
+forge project alias info           # Show all
+forge project alias info frontend  # Show one
+```
+
+### `forge tunnel init`
+
+Initialize the Cloudflare tunnel. Runs `cloudflared` as a Docker container alongside Traefik on `forge-network`.
+
+```sh
+export CLOUDFLARE_TUNNEL_TOKEN="eyJ..."  # Add to ~/.zshrc
+forge tunnel init
+```
+
+- Requires `$CLOUDFLARE_TUNNEL_TOKEN` in the environment (token from Cloudflare dashboard)
+- Writes `~/.forge/cf-config.yml` with catch-all ingress routing to Traefik
+- Adds a `cloudflared` container to the system compose file
+- The token is never stored on disk — Docker Compose reads it from the environment at runtime
+
+### `forge tunnel stop`
+
+Stop and remove the cloudflared container.
+
+```sh
+forge tunnel stop
+```
+
+### `forge tunnel set-domain`
+
+Set the Cloudflare base domain used for public alias routing.
+
+```sh
+forge tunnel set-domain dev.example.com
+```
+
+Aliases with `"cloudflare": true` will generate Traefik routers for `<code>.dev.example.com` (or `<alias>.<code>.dev.example.com` for subdomains).
+
+### `forge tunnel info`
+
+Show current tunnel configuration — domain, enabled status, and container state.
 
 ## Project Configuration
 
@@ -233,8 +332,8 @@ The `alias` map controls how services are exposed through Traefik. Keys are Dock
 
 ```json
 "alias": {
-  "frontend": { "port": 5173, "alias": null },
-  "backend": { "port": 3000, "alias": "api" },
+  "frontend": { "port": 5173, "alias": null, "cloudflare": true },
+  "backend": { "port": 3000, "alias": null, "path": "/api", "cloudflare": true },
   "docs": { "port": 8080, "alias": "docs", "https": false }
 }
 ```
@@ -243,17 +342,19 @@ The `alias` map controls how services are exposed through Traefik. Keys are Dock
 |-------|------|-------------|
 | `port` | number | The port the container listens on internally |
 | `alias` | string or null | `null` = root domain (`<code>.local`), string = subdomain (`<alias>.<code>.local`) |
+| `path` | string | Path prefix for routing (e.g. `/api`). Traefik strips the prefix before forwarding |
 | `https` | boolean | Route via HTTPS with TLS (default: `true`). Set `false` for HTTP-only |
+| `cloudflare` | boolean | Also create a public Traefik router for access via Cloudflare tunnel |
 
-For the example above with project code `my-project`:
+For the example above with project code `my-project` and cloudflare domain `dev.example.com`:
 
-| Service | Domain | Protocol |
-|---------|--------|----------|
-| `frontend` | `my-project.local` | HTTPS |
-| `backend` | `api.my-project.local` | HTTPS |
-| `docs` | `docs.my-project.local` | HTTP |
+| Service | Local Domain | Public Domain | Protocol |
+|---------|-------------|---------------|----------|
+| `frontend` | `my-project.local` | `my-project.dev.example.com` | HTTPS / HTTP (CF) |
+| `backend` | `my-project.local/api` | `my-project.dev.example.com/api` | HTTPS / HTTP (CF) |
+| `docs` | `docs.my-project.local` | — | HTTP |
 
-HTTPS-enabled routes automatically redirect HTTP requests to HTTPS (301 permanent redirect).
+HTTPS-enabled routes automatically redirect HTTP requests to HTTPS (301 permanent redirect). Cloudflare tunnel routes are always HTTP — the tunnel handles TLS termination.
 
 ### Network connectivity
 
@@ -283,12 +384,13 @@ Forge stores its data in `~/.forge/`:
 
 ```
 ~/.forge/
-├── config.json          # User configuration
+├── config.json          # Global config (cloudflare_domain, cloudflare_tunnel)
 ├── projects.json        # Registered project paths
-├── docker-compose.yml   # Traefik service definition
+├── docker-compose.yml   # System compose (Traefik + optional cloudflared)
+├── cf-config.yml        # Cloudflared ingress config (created by forge tunnel init)
 ├── traefik/             # Traefik dynamic configuration
 │   ├── _tls.yml         # TLS certificate config
-│   └── <project>.yml    # Per-project routing rules
+│   └── <project>.yml    # Per-project routing rules (local + CF routers)
 └── certs/               # mkcert TLS certificates
     ├── local.pem
     └── local-key.pem
