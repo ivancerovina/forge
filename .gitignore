@@ -9,3 +9,6 @@
 .vscode/
 *.swp
 *~
+
+# Plans
+.plans/
