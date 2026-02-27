@@ -21,6 +21,11 @@ type traefikDynamicConfig struct {
 
 type traefikMiddleware struct {
 	RedirectScheme *traefikRedirectScheme `yaml:"redirectScheme,omitempty"`
+	StripPrefix    *traefikStripPrefix    `yaml:"stripPrefix,omitempty"`
+}
+
+type traefikStripPrefix struct {
+	Prefixes []string `yaml:"prefixes"`
 }
 
 type traefikRedirectScheme struct {
@@ -67,9 +72,29 @@ func writeTraefikConfig(project config.ForgeProject, bindings []DomainBinding) e
 
 	for _, b := range bindings {
 		key := project.Code + "-" + b.Container
+
+		rule := fmt.Sprintf("Host(`%s`)", b.Domain)
+		if b.Path != "" {
+			rule = fmt.Sprintf("Host(`%s`) && PathPrefix(`%s`)", b.Domain, b.Path)
+		}
+
 		router := traefikRouter{
-			Rule:    fmt.Sprintf("Host(`%s`)", b.Domain),
+			Rule:    rule,
 			Service: key,
+		}
+
+		// Add StripPrefix middleware for path-based routes
+		if b.Path != "" {
+			stripKey := "strip-" + key
+			if cfg.HTTP.Middlewares == nil {
+				cfg.HTTP.Middlewares = make(map[string]traefikMiddleware)
+			}
+			cfg.HTTP.Middlewares[stripKey] = traefikMiddleware{
+				StripPrefix: &traefikStripPrefix{
+					Prefixes: []string{b.Path},
+				},
+			}
+			router.Middlewares = append(router.Middlewares, stripKey)
 		}
 
 		if b.HTTPS && hasCerts {
@@ -78,21 +103,23 @@ func writeTraefikConfig(project config.ForgeProject, bindings []DomainBinding) e
 
 			// Add HTTP->HTTPS redirect router
 			if cfg.HTTP.Middlewares == nil {
-				cfg.HTTP.Middlewares = map[string]traefikMiddleware{
-					"redirect-to-https": {
-						RedirectScheme: &traefikRedirectScheme{
-							Scheme:    "https",
-							Permanent: true,
-						},
+				cfg.HTTP.Middlewares = make(map[string]traefikMiddleware)
+			}
+			if _, exists := cfg.HTTP.Middlewares["redirect-to-https"]; !exists {
+				cfg.HTTP.Middlewares["redirect-to-https"] = traefikMiddleware{
+					RedirectScheme: &traefikRedirectScheme{
+						Scheme:    "https",
+						Permanent: true,
 					},
 				}
 			}
-			cfg.HTTP.Routers[key+"-http"] = traefikRouter{
-				Rule:        fmt.Sprintf("Host(`%s`)", b.Domain),
+			httpRouter := traefikRouter{
+				Rule:        rule,
 				Service:     key,
 				EntryPoints: []string{"web"},
 				Middlewares: []string{"redirect-to-https"},
 			}
+			cfg.HTTP.Routers[key+"-http"] = httpRouter
 		} else {
 			router.EntryPoints = []string{"web"}
 		}

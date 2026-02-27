@@ -11,6 +11,7 @@ type DomainBinding struct {
 	Domain    string
 	Container string
 	Port      int
+	Path      string
 	HTTPS     bool
 }
 
@@ -51,6 +52,7 @@ func ComputeBindings(project config.ForgeProject) []DomainBinding {
 			Domain:    domain,
 			Container: container,
 			Port:      entry.Port,
+			Path:      entry.Path,
 			HTTPS:     entry.HTTPS == nil || *entry.HTTPS,
 		})
 	}
