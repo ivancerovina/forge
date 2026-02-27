@@ -64,11 +64,13 @@ internal/
   - `alias: "backend"` → `backend.<project-code>.local`
 - Legacy `environment.commands` format is still supported with a deprecation warning
 
-## Commands
+## Build & Install
+
+The `forge` binary in this directory is symlinked to the user's PATH — it IS the globally installed `forge` command. **NEVER delete it.** To rebuild:
 
 ```sh
-go run .           # Run the CLI
-go build -o forge  # Build binary
+go build -o forge  # Rebuild binary (overwrites in place, preserves symlink)
+go run .           # Run without building
 go mod tidy        # Sync dependencies
 ```
 
