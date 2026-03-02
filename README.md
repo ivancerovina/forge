@@ -188,7 +188,7 @@ Created by `forge project init` in the project root:
     },
     "alias": {
       "frontend": { "port": 5173, "alias": null, "cloudflare": true },
-      "backend": { "port": 3000, "alias": null, "path": "/api" },
+      "backend": { "port": 3000, "alias": null, "path": "/api", "cloudflare": true },
       "docs": { "port": 8080, "alias": "docs", "https": false }
     }
   }
