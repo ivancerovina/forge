@@ -73,9 +73,11 @@ func ComposeDown(composeFile, projectDir string) error {
 }
 
 // RunHooks executes shell hooks sequentially via sh -c.
-func RunHooks(hooks []string) error {
+// Hooks run with their working directory set to projectDir.
+func RunHooks(hooks []string, projectDir string) error {
 	for _, h := range hooks {
 		cmd := exec.Command("sh", "-c", h)
+		cmd.Dir = projectDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {

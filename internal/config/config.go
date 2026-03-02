@@ -74,6 +74,50 @@ func ReadForgeRC(dir string) (ForgeProject, error) {
 	return p, nil
 }
 
+// ProjectLocation holds a parsed ForgeProject and the directory where .forgerc.json was found.
+type ProjectLocation struct {
+	Project ForgeProject
+	Dir     string // absolute path to directory containing .forgerc.json
+}
+
+// FindForgeRC walks up from startDir looking for .forgerc.json.
+// Stops at: (1) directory containing .forgerc.json, (2) directory containing .git
+// (without .forgerc.json), (3) user home directory, (4) filesystem root.
+func FindForgeRC(startDir string) (ProjectLocation, error) {
+	dir, err := filepath.Abs(startDir)
+	if err != nil {
+		return ProjectLocation{}, fmt.Errorf("could not resolve path: %w", err)
+	}
+
+	home, _ := os.UserHomeDir()
+
+	for {
+		// Check for .forgerc.json first (it commonly coexists with .git)
+		p, err := ReadForgeRC(dir)
+		if err == nil {
+			return ProjectLocation{Project: p, Dir: dir}, nil
+		}
+
+		// If .git exists here but no .forgerc.json, stop searching
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return ProjectLocation{}, fmt.Errorf("no .forgerc.json found (searched up to git root %s)", dir)
+		}
+
+		// Stop at home directory
+		if dir == home {
+			return ProjectLocation{}, fmt.Errorf("no .forgerc.json found (searched up to home directory)")
+		}
+
+		// Move to parent
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Filesystem root
+			return ProjectLocation{}, fmt.Errorf("no .forgerc.json found")
+		}
+		dir = parent
+	}
+}
+
 func projectsFilePath() (string, error) {
 	forgeDir, err := ForgeDir()
 	if err != nil {

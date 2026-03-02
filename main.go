@@ -537,18 +537,21 @@ func projectStatusCmd() *cli.Command {
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			var composeFile string
 			var err error
+			var projectDir string
 
-			project, projErr := config.ReadForgeRC(".")
+			loc, projErr := config.FindForgeRC(".")
 			if projErr == nil {
-				composeFile, err = docker.ResolveComposeFile(".", project.Environment.ComposeFile)
+				projectDir = loc.Dir
+				composeFile, err = docker.ResolveComposeFile(loc.Dir, loc.Project.Environment.ComposeFile)
 			} else {
+				projectDir = "."
 				composeFile, err = docker.ResolveComposeFile(".", "")
 			}
 			if err != nil {
 				return fmt.Errorf("no compose file found in the current directory")
 			}
 
-			statuses, err := docker.GetServiceStatus(composeFile, ".")
+			statuses, err := docker.GetServiceStatus(composeFile, projectDir)
 			if err != nil {
 				return fmt.Errorf("failed to parse compose file: %w", err)
 			}
@@ -568,10 +571,11 @@ func projectBindCmd() *cli.Command {
 		Name:  "bind",
 		Usage: "Bind project domains to local routing",
 		Action: withInit(func(ctx context.Context, cmd *cli.Command) error {
-			project, err := config.ReadForgeRC(".")
+			loc, err := config.FindForgeRC(".")
 			if err != nil {
-				return fmt.Errorf("no .forgerc.json found in the current directory")
+				return err
 			}
+			project := loc.Project
 
 			if len(project.Environment.Alias) == 0 {
 				return fmt.Errorf("no aliases defined in .forgerc.json — add entries to environment.alias first")
@@ -637,10 +641,11 @@ func projectUnbindCmd() *cli.Command {
 		Name:  "unbind",
 		Usage: "Remove project domain bindings",
 		Action: withInit(func(ctx context.Context, cmd *cli.Command) error {
-			project, err := config.ReadForgeRC(".")
+			loc, err := config.FindForgeRC(".")
 			if err != nil {
-				return fmt.Errorf("no .forgerc.json found in the current directory")
+				return err
 			}
+			project := loc.Project
 
 			result, err := bind.Unbind(project)
 			if err != nil {
@@ -668,31 +673,32 @@ func startCmd() *cli.Command {
 		Name:  "start",
 		Usage: "Start the project environment",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			p, err := config.ReadForgeRC(".")
+			loc, err := config.FindForgeRC(".")
 			if err != nil {
-				return fmt.Errorf("no .forgerc.json found in the current directory")
+				return err
 			}
+			p := loc.Project
 
 			// Legacy commands format
 			if p.Environment.IsLegacy() {
 				fmt.Println(ui.WarningStyle.Render("⚠ .forgerc.json uses legacy \"commands\" format. Migrate to \"hooks\" + native compose."))
-				return docker.RunHooks(p.Environment.Commands.Start)
+				return docker.RunHooks(p.Environment.Commands.Start, loc.Dir)
 			}
 
-			composeFile, err := docker.ResolveComposeFile(".", p.Environment.ComposeFile)
+			composeFile, err := docker.ResolveComposeFile(loc.Dir, p.Environment.ComposeFile)
 			if err != nil {
 				return err
 			}
 
-			if err := docker.RunHooks(p.Environment.Hooks.PreStart); err != nil {
+			if err := docker.RunHooks(p.Environment.Hooks.PreStart, loc.Dir); err != nil {
 				return err
 			}
 
-			if err := docker.ComposeUp(composeFile, "."); err != nil {
+			if err := docker.ComposeUp(composeFile, loc.Dir); err != nil {
 				return err
 			}
 
-			connected, alreadyConnected, connErr := docker.ConnectToForgeNetwork(composeFile, ".")
+			connected, alreadyConnected, connErr := docker.ConnectToForgeNetwork(composeFile, loc.Dir)
 			if connErr != nil {
 				fmt.Println(ui.WarningStyle.Render("⚠ " + connErr.Error()))
 			}
@@ -703,13 +709,13 @@ func startCmd() *cli.Command {
 				fmt.Println("  " + ui.DescStyle.Render("–") + " " + ui.CmdStyle.Render(name) + " " + ui.DescStyle.Render("already on forge-network"))
 			}
 
-			if err := docker.RunHooks(p.Environment.Hooks.PostStart); err != nil {
+			if err := docker.RunHooks(p.Environment.Hooks.PostStart, loc.Dir); err != nil {
 				return err
 			}
 
 			// Display service status
 			fmt.Println()
-			statuses, statusErr := docker.GetServiceStatus(composeFile, ".")
+			statuses, statusErr := docker.GetServiceStatus(composeFile, loc.Dir)
 			if statusErr == nil && len(statuses) > 0 {
 				displayServiceStatus(statuses)
 			}
@@ -724,31 +730,32 @@ func stopCmd() *cli.Command {
 		Name:  "stop",
 		Usage: "Stop the project environment",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			p, err := config.ReadForgeRC(".")
+			loc, err := config.FindForgeRC(".")
 			if err != nil {
-				return fmt.Errorf("no .forgerc.json found in the current directory")
+				return err
 			}
+			p := loc.Project
 
 			// Legacy commands format
 			if p.Environment.IsLegacy() {
 				fmt.Println(ui.WarningStyle.Render("⚠ .forgerc.json uses legacy \"commands\" format. Migrate to \"hooks\" + native compose."))
-				return docker.RunHooks(p.Environment.Commands.Stop)
+				return docker.RunHooks(p.Environment.Commands.Stop, loc.Dir)
 			}
 
-			composeFile, err := docker.ResolveComposeFile(".", p.Environment.ComposeFile)
+			composeFile, err := docker.ResolveComposeFile(loc.Dir, p.Environment.ComposeFile)
 			if err != nil {
 				return err
 			}
 
-			if err := docker.RunHooks(p.Environment.Hooks.PreStop); err != nil {
+			if err := docker.RunHooks(p.Environment.Hooks.PreStop, loc.Dir); err != nil {
 				return err
 			}
 
-			if err := docker.ComposeStop(composeFile, "."); err != nil {
+			if err := docker.ComposeStop(composeFile, loc.Dir); err != nil {
 				return err
 			}
 
-			return docker.RunHooks(p.Environment.Hooks.PostStop)
+			return docker.RunHooks(p.Environment.Hooks.PostStop, loc.Dir)
 		},
 	}
 }
@@ -758,31 +765,32 @@ func destroyCmd() *cli.Command {
 		Name:  "destroy",
 		Usage: "Destroy the project environment",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			p, err := config.ReadForgeRC(".")
+			loc, err := config.FindForgeRC(".")
 			if err != nil {
-				return fmt.Errorf("no .forgerc.json found in the current directory")
+				return err
 			}
+			p := loc.Project
 
 			// Legacy commands format
 			if p.Environment.IsLegacy() {
 				fmt.Println(ui.WarningStyle.Render("⚠ .forgerc.json uses legacy \"commands\" format. Migrate to \"hooks\" + native compose."))
-				return docker.RunHooks(p.Environment.Commands.Destroy)
+				return docker.RunHooks(p.Environment.Commands.Destroy, loc.Dir)
 			}
 
-			composeFile, err := docker.ResolveComposeFile(".", p.Environment.ComposeFile)
+			composeFile, err := docker.ResolveComposeFile(loc.Dir, p.Environment.ComposeFile)
 			if err != nil {
 				return err
 			}
 
-			if err := docker.RunHooks(p.Environment.Hooks.PreDestroy); err != nil {
+			if err := docker.RunHooks(p.Environment.Hooks.PreDestroy, loc.Dir); err != nil {
 				return err
 			}
 
-			if err := docker.ComposeDown(composeFile, "."); err != nil {
+			if err := docker.ComposeDown(composeFile, loc.Dir); err != nil {
 				return err
 			}
 
-			return docker.RunHooks(p.Environment.Hooks.PostDestroy)
+			return docker.RunHooks(p.Environment.Hooks.PostDestroy, loc.Dir)
 		},
 	}
 }
@@ -993,10 +1001,11 @@ func projectAliasAddCmd() *cli.Command {
 			&cli.BoolFlag{Name: "force", Usage: "Overwrite existing alias"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			project, err := config.ReadForgeRC(".")
+			loc, err := config.FindForgeRC(".")
 			if err != nil {
-				return fmt.Errorf("no .forgerc.json found in the current directory")
+				return err
 			}
+			project := loc.Project
 
 			serviceName := cmd.Args().First()
 			portSet := cmd.IsSet("port")
@@ -1134,7 +1143,7 @@ func projectAliasAddCmd() *cli.Command {
 			}
 			project.Environment.Alias[serviceName] = entry
 
-			if err := config.WriteForgeRC(".", project); err != nil {
+			if err := config.WriteForgeRC(loc.Dir, project); err != nil {
 				return err
 			}
 
@@ -1177,10 +1186,11 @@ func projectAliasRemoveCmd() *cli.Command {
 		Aliases: []string{"rm"},
 		Usage:   "Remove a service alias",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			project, err := config.ReadForgeRC(".")
+			loc, err := config.FindForgeRC(".")
 			if err != nil {
-				return fmt.Errorf("no .forgerc.json found in the current directory")
+				return err
 			}
+			project := loc.Project
 
 			serviceName := cmd.Args().First()
 			interactive := serviceName == ""
@@ -1242,7 +1252,7 @@ func projectAliasRemoveCmd() *cli.Command {
 
 			delete(project.Environment.Alias, serviceName)
 
-			if err := config.WriteForgeRC(".", project); err != nil {
+			if err := config.WriteForgeRC(loc.Dir, project); err != nil {
 				return err
 			}
 
@@ -1261,10 +1271,11 @@ func projectAliasInfoCmd() *cli.Command {
 		Name:  "info",
 		Usage: "Show alias details",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			project, err := config.ReadForgeRC(".")
+			loc, err := config.FindForgeRC(".")
 			if err != nil {
-				return fmt.Errorf("no .forgerc.json found in the current directory")
+				return err
 			}
+			project := loc.Project
 
 			serviceName := cmd.Args().First()
 
