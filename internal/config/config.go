@@ -93,8 +93,13 @@ func FindForgeRC(startDir string) (ProjectLocation, error) {
 
 	for {
 		// Check for .forgerc.json first (it commonly coexists with .git)
-		p, err := ReadForgeRC(dir)
-		if err == nil {
+		rcPath := filepath.Join(dir, ".forgerc.json")
+		if _, statErr := os.Stat(rcPath); statErr == nil {
+			// File exists — must parse successfully or it's a real error
+			p, err := ReadForgeRC(dir)
+			if err != nil {
+				return ProjectLocation{}, fmt.Errorf("found .forgerc.json in %s but it is invalid: %w", dir, err)
+			}
 			return ProjectLocation{Project: p, Dir: dir}, nil
 		}
 

@@ -17,7 +17,7 @@ Single-module Go project.
 ```
 main.go                    CLI entry point (urfave/cli app, action functions, display helpers)
 internal/
-  config/                  Types (ForgeProject, Environment, etc.), config R/W, project registry
+  config/                  Types (ForgeProject, Environment, etc.), config R/W, project registry, walk-up .forgerc.json discovery
   docker/                  Docker Compose operations, service status, forge-network connect
   system/                  System init (Docker network, Traefik, TLS certs)
   bind/                    Domain binding (/etc/hosts, Traefik dynamic config)
@@ -34,7 +34,7 @@ internal/
 
 ## Project File
 
-`.forgerc.json` — created in the current directory by `forge project init`. Stores project metadata and environment config:
+`.forgerc.json` — created in the current directory by `forge project init`. Stores project metadata and environment config. Most commands auto-discover `.forgerc.json` by walking up the directory tree from the current directory, stopping at a `.git` boundary or the user's home directory. This means commands like `forge start` work from any subdirectory within a project.
 ```json
 {
   "name": "My Project",
@@ -102,6 +102,7 @@ Initialize a new forge project in the current directory (creates `.forgerc.json`
 - `forge stop` — runs `docker compose stop`
 - `forge destroy` — runs `docker compose down`
 - All three run pre/post hooks if configured
+- All three work from any subdirectory within the project (walks up to find `.forgerc.json`)
 
 ### `forge project bind` / `forge project unbind`
 
@@ -109,10 +110,12 @@ Initialize a new forge project in the current directory (creates `.forgerc.json`
 - Only local domains are added to `/etc/hosts` (public CF domains are routed through the tunnel)
 - No longer requires `sudo` — prompts for password internally when writing `/etc/hosts`
 - Note: forge refuses to run as root (`sudo forge ...` is blocked)
+- Works from any subdirectory within the project
 
 ### `forge project status`
 
 - Shows Docker Compose service states and forge-network connectivity
+- Works from any subdirectory within the project
 
 ### `forge project alias add` / `forge project alias remove` / `forge project alias info`
 
@@ -120,6 +123,7 @@ Initialize a new forge project in the current directory (creates `.forgerc.json`
 - `forge project alias remove <service>` — remove a service alias
 - `forge project alias info [service]` — show alias details (single or all)
 - All three support interactive mode (run without arguments)
+- All three work from any subdirectory within the project; `alias add` and `alias remove` write `.forgerc.json` back to the discovered project root
 
 ### `forge tunnel init`
 

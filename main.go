@@ -493,10 +493,12 @@ func projectListCmd() *cli.Command {
 	return &cli.Command{
 		Name:  "list",
 		Usage: "List registered projects",
-		Action: withInit(func(ctx context.Context, cmd *cli.Command) error {
+		Action: func(ctx context.Context, cmd *cli.Command) error {
 			paths, err := config.ReadProjects()
 			if err != nil {
-				return fmt.Errorf("could not read projects: %w", err)
+				// ~/.forge/projects.json doesn't exist yet — no projects registered
+				fmt.Println(ui.DescStyle.Render("No projects registered."))
+				return nil
 			}
 
 			if len(paths) == 0 {
@@ -526,7 +528,7 @@ func projectListCmd() *cli.Command {
 				fmt.Println("  " + ui.TitleStyle.Render(project.Name) + " " + ui.DescStyle.Render(p))
 			}
 			return nil
-		}),
+		},
 	}
 }
 
@@ -548,7 +550,7 @@ func projectStatusCmd() *cli.Command {
 				composeFile, err = docker.ResolveComposeFile(".", "")
 			}
 			if err != nil {
-				return fmt.Errorf("no compose file found in the current directory")
+				return fmt.Errorf("no compose file found")
 			}
 
 			statuses, err := docker.GetServiceStatus(composeFile, projectDir)
@@ -1397,7 +1399,10 @@ func runGit(args ...string) error {
 
 func setupGitRemote(url string) error {
 	if err := runGit("remote", "add", "origin", url); err != nil {
-		return runGit("remote", "set-url", "origin", url)
+		// If "add" failed because remote already exists, try set-url instead
+		if setErr := runGit("remote", "set-url", "origin", url); setErr != nil {
+			return fmt.Errorf("failed to configure git remote: %w", setErr)
+		}
 	}
 	return nil
 }
