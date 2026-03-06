@@ -42,7 +42,7 @@ sudo mv forge /usr/local/bin/
 Initialize forge once to create the Docker network and start Traefik:
 
 ```sh
-forge init
+forge setup
 ```
 
 This is idempotent — safe to run again if something gets out of sync.
@@ -58,13 +58,12 @@ forge project init
 # Or non-interactive
 forge project init -t "My App" -c my-app
 
-# Add service aliases (keys are your compose service names)
+# Add service aliases (auto-binds domains)
 forge project alias add frontend --port 5173
 forge project alias add backend --port 3000 --alias api --path /api
 
-# Start and bind domains
-forge start
-forge project bind
+# Start
+forge project start
 
 # Open https://my-app.local
 ```
@@ -76,7 +75,7 @@ If a project already has a `.forgerc.json` (e.g. cloned from a repo), just regis
 ```sh
 cd ~/projects/existing-app
 forge project register
-forge start
+forge project start
 forge project bind
 ```
 
@@ -88,29 +87,24 @@ All project commands work from any subdirectory within the project.
 
 | Command | Description |
 |---------|-------------|
-| `forge init` | Create Docker network, start Traefik (one-time setup) |
-
-### Lifecycle
-
-| Command | Description |
-|---------|-------------|
-| `forge start` | `docker compose up -d`, connect services to forge-network, show status |
-| `forge stop` | `docker compose stop` (containers kept, restart with `forge start`) |
-| `forge destroy` | `docker compose down` (containers and networks removed) |
-
-All three run pre/post hooks if configured.
+| `forge setup` | Create Docker network, start Traefik (one-time setup). `forge init` is a hidden alias |
 
 ### Project Management
 
 | Command | Description |
 |---------|-------------|
 | `forge project init` | Create `.forgerc.json` in current directory |
-| `forge project status` | Show service states and forge-network connectivity |
+| `forge project start` | `docker compose up -d`, connect services to forge-network, show status |
+| `forge project stop` | `docker compose stop` (containers kept, restart with `forge project start`) |
+| `forge project destroy` | `docker compose down` (containers and networks removed) |
+| `forge project info` | Show project details, service states, and alias overview |
 | `forge project bind` | Write `/etc/hosts` entries and Traefik routing config |
 | `forge project unbind` | Remove `/etc/hosts` entries and Traefik config |
 | `forge project register [path]` | Add project to the global registry |
 | `forge project unregister [path]` | Remove project from the global registry |
 | `forge project list` | List all registered projects |
+
+`start`, `stop`, and `destroy` also work as top-level shortcuts (e.g. `forge start`). All project commands run pre/post hooks if configured.
 
 **`project init` flags:**
 
@@ -135,7 +129,7 @@ Aliases map compose service names to Traefik routing rules. Manage them with:
 | `forge project alias remove <service>` | Remove a service alias |
 | `forge project alias info [service]` | Show alias details |
 
-All alias commands also work interactively (run without arguments).
+All alias commands also work interactively (run without arguments). `alias add` and `alias remove` automatically bind/unbind domains after changes.
 
 **`alias add` flags:**
 
@@ -165,8 +159,7 @@ forge tunnel set-domain dev.example.com
 forge tunnel init
 
 forge project alias add frontend --port 5173 --cloudflare --force
-forge project bind
-# Access at https://my-app.dev.example.com
+# Domains are auto-bound — access at https://my-app.dev.example.com
 ```
 
 ## Configuration

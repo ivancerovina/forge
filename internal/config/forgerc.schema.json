@@ -1,0 +1,133 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/ivancerovina/forge/raw/master/internal/config/forgerc.schema.json",
+  "title": "Forge Project Configuration",
+  "description": "Configuration file for a forge-managed project (.forgerc.json)",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Path to the JSON Schema for editor validation and autocompletion"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable project name"
+    },
+    "description": {
+      "type": "string",
+      "description": "Project description"
+    },
+    "code": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$",
+      "description": "Project code used for domain generation (letters, numbers, hyphens; cannot start or end with hyphen)"
+    },
+    "environment": {
+      "type": "object",
+      "description": "Environment and service configuration",
+      "properties": {
+        "compose_file": {
+          "type": "string",
+          "description": "Path to Docker Compose file (relative to project dir). If omitted, auto-detected."
+        },
+        "hooks": {
+          "type": "object",
+          "description": "Shell commands run before/after Docker Compose operations",
+          "properties": {
+            "pre_start": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Commands run before docker compose up"
+            },
+            "post_start": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Commands run after docker compose up"
+            },
+            "pre_stop": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Commands run before docker compose stop"
+            },
+            "post_stop": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Commands run after docker compose stop"
+            },
+            "pre_destroy": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Commands run before docker compose down"
+            },
+            "post_destroy": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Commands run after docker compose down"
+            }
+          },
+          "additionalProperties": false
+        },
+        "alias": {
+          "type": "object",
+          "description": "Maps container/service names to Traefik routing rules",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["port"],
+            "properties": {
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535,
+                "description": "Service port"
+              },
+              "alias": {
+                "type": ["string", "null"],
+                "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$",
+                "description": "Subdomain prefix. null or omitted = index domain (<code>.local)"
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^/[a-zA-Z0-9/_-]+$",
+                "description": "Path prefix for Traefik routing (e.g. /api). Must start with /"
+              },
+              "https": {
+                "type": "boolean",
+                "default": true,
+                "description": "Enable HTTPS (default true). Set false for HTTP only"
+              },
+              "cloudflare": {
+                "type": "boolean",
+                "default": false,
+                "description": "Also create a public Traefik router via Cloudflare tunnel"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "commands": {
+          "type": "object",
+          "description": "Legacy command format (deprecated — migrate to hooks)",
+          "properties": {
+            "start": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "stop": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "destroy": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": ["name", "code", "environment"],
+  "additionalProperties": false
+}

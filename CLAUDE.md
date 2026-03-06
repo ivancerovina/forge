@@ -26,17 +26,21 @@ internal/
 
 ## Data Directory
 
-`~/.forge/` — created on first use by commands that need it (`forge init`, `forge project init`, etc.). Read-only commands like `--help` and `forge project list` do not create it. Existing files are never overwritten.
+`~/.forge/` — created on first use by commands that need it (`forge setup`, `forge project init`, etc.). Read-only commands like `--help` and `forge project list` do not create it. Existing files are never overwritten.
 - `config.json` — global configuration (`cloudflare_domain`, `cloudflare_tunnel` flag)
 - `projects.json` — project registry (initialized as `[]`)
-- `docker-compose.yml` — system-level compose file for Traefik + optional cloudflared (written by `forge init`)
+- `docker-compose.yml` — system-level compose file for Traefik + optional cloudflared (written by `forge setup`)
 - `cf-config.yml` — cloudflared ingress config (written by `forge tunnel init`)
+- `schemas/forgerc.schema.json` — JSON Schema for `.forgerc.json` (embedded in binary, written on init)
 
 ## Project File
 
-`.forgerc.json` — created in the current directory by `forge project init`. Stores project metadata and environment config. Most commands auto-discover `.forgerc.json` by walking up the directory tree from the current directory, stopping at a `.git` boundary or the user's home directory. This means commands like `forge start` work from any subdirectory within a project.
+`.forgerc.json` — created in the current directory by `forge project init`. Stores project metadata and environment config. Most commands auto-discover `.forgerc.json` by walking up the directory tree from the current directory, stopping at a `.git` boundary or the user's home directory. This means commands like `forge project start` work from any subdirectory within a project.
+
+Every `.forgerc.json` written by forge includes a `$schema` field pointing to `~/.forge/schemas/forgerc.schema.json`. This enables autocompletion and validation in editors that support JSON Schema (VS Code, JetBrains, etc.). The schema file is kept in sync with the binary — it is written on every `ensureForgeDir()` call.
 ```json
 {
+  "$schema": "file:///home/user/.forge/schemas/forgerc.schema.json",
   "name": "My Project",
   "description": "Some description",
   "code": "my-project",
@@ -77,9 +81,14 @@ go run .           # Run without building
 go mod tidy        # Sync dependencies
 ```
 
-### `forge init`
+The CLI version defaults to `0.1.0` and can be overridden at build time:
+```sh
+go build -ldflags "-X main.version=1.2.3" -o forge
+```
 
-Initialize the forge system infrastructure. Creates the `forge-network` Docker network and starts a Traefik reverse proxy container (ports 80/443). If a Cloudflare tunnel is enabled, also starts the cloudflared container. Idempotent — safe to run multiple times.
+### `forge setup`
+
+Initialize the forge system infrastructure. Creates the `forge-network` Docker network and starts a Traefik reverse proxy container (ports 80/443). If a Cloudflare tunnel is enabled, also starts the cloudflared container. Idempotent — safe to run multiple times. `forge init` is a hidden alias for backward compatibility.
 
 - Writes `~/.forge/docker-compose.yml` with the Traefik service (+ cloudflared if tunnel enabled)
 - Runs `docker compose up -d` to start the stack
@@ -96,13 +105,17 @@ Initialize a new forge project in the current directory (creates `.forgerc.json`
 - Prompts before overwriting an existing `.forgerc.json`
 - Note: non-interactive mode (`-t`/`-c`) no longer launches any interactive prompts
 
-### `forge start` / `forge stop` / `forge destroy`
+### `forge project start` / `forge project stop` / `forge project destroy`
 
-- `forge start` — runs `docker compose up -d`, auto-connects services to forge-network, shows status
-- `forge stop` — runs `docker compose stop`
-- `forge destroy` — runs `docker compose down`
+- `forge project start` — runs `docker compose up -d`, auto-connects services to forge-network, shows status
+- `forge project stop [all|<project name>]` — stops the project environment
+  - No argument: stops the project in the current directory (walks up to find `.forgerc.json`)
+  - `all`: stops all registered projects, continuing on failure, prints per-project status
+  - `<project name>`: looks up a registered project by name (case-insensitive) and stops it
+- `forge project destroy` — runs `docker compose down`
 - All three run pre/post hooks if configured
 - All three work from any subdirectory within the project (walks up to find `.forgerc.json`)
+- `forge start`, `forge stop`, `forge destroy` still work as hidden aliases for backward compatibility
 
 ### `forge project bind` / `forge project unbind`
 
@@ -112,9 +125,10 @@ Initialize a new forge project in the current directory (creates `.forgerc.json`
 - Note: forge refuses to run as root (`sudo forge ...` is blocked)
 - Works from any subdirectory within the project
 
-### `forge project status`
+### `forge project info`
 
-- Shows Docker Compose service states and forge-network connectivity
+- Shows project header (name, description, code), Docker Compose service states, and alias overview
+- Replaces the old `forge project status` command
 - Works from any subdirectory within the project
 
 ### `forge project alias add` / `forge project alias remove` / `forge project alias info`
@@ -124,6 +138,7 @@ Initialize a new forge project in the current directory (creates `.forgerc.json`
 - `forge project alias info [service]` — show alias details (single or all)
 - All three support interactive mode (run without arguments)
 - All three work from any subdirectory within the project; `alias add` and `alias remove` write `.forgerc.json` back to the discovered project root
+- **Auto-bind:** `alias add` and `alias remove` automatically run bind/unbind after modifying aliases, so a separate `forge project bind` call is usually unnecessary
 
 ### `forge tunnel init`
 
@@ -158,6 +173,11 @@ Purple color palette. All styled output uses lipgloss with these colors:
 - Text: `#E0E0E0` (white) — commands, key terms
 - Muted: `#6C6C6C` (dim) — descriptions, secondary text
 - Error: `#FF6B6B` (red) — error messages
+
+## Documentation Maintenance
+
+- Update `CLAUDE.md` when it gets outdated, and after every major change
+- Update `.claude/skills/forge/SKILL.md` when it gets outdated, or on major changes. Keep only stuff relevant to the agent there
 
 ## Code Conventions
 

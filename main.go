@@ -21,6 +21,8 @@ import (
 	"github.com/ivancerovina/forge/internal/ui"
 )
 
+var version = "0.1.0"
+
 func main() {
 	if os.Getuid() == 0 {
 		fmt.Fprintln(os.Stderr, ui.ErrStyle.Render("forge must not be run as root."))
@@ -30,15 +32,16 @@ func main() {
 	}
 
 	root := &cli.Command{
-		Name:  "forge",
-		Usage: "project management CLI for developers",
+		Name:    "forge",
+		Usage:   "project management CLI for developers",
+		Version: version,
 		Commands: []*cli.Command{
 			systemInitCmd(),
 			projectCmd(),
 			tunnelCmd(),
-			startCmd(),
-			stopCmd(),
-			destroyCmd(),
+			hiddenAlias(startCmd()),
+			hiddenAlias(stopCmd()),
+			hiddenAlias(destroyCmd()),
 		},
 	}
 	if err := root.Run(context.Background(), os.Args); err != nil {
@@ -81,6 +84,10 @@ func ensureForgeDir() error {
 		if err := os.WriteFile(path, []byte(content+"\n"), 0o644); err != nil {
 			return fmt.Errorf("could not create %s: %w", path, err)
 		}
+	}
+
+	if err := config.EnsureSchema(); err != nil {
+		return err
 	}
 
 	return nil
@@ -178,8 +185,9 @@ func displayServiceStatus(statuses []docker.ServiceStatus) {
 
 func systemInitCmd() *cli.Command {
 	return &cli.Command{
-		Name:  "init",
-		Usage: "Initialize forge system (Traefik, Docker network)",
+		Name:    "setup",
+		Aliases: []string{"init"},
+		Usage:   "Set up forge system (Traefik, Docker network)",
 		Action: withInit(func(ctx context.Context, cmd *cli.Command) error {
 			fmt.Println(ui.TitleStyle.Render("Initializing forge system..."))
 			fmt.Println()
@@ -226,12 +234,21 @@ func projectCmd() *cli.Command {
 			registerCmd(),
 			unregisterCmd(),
 			projectListCmd(),
-			projectStatusCmd(),
+			startCmd(),
+			stopCmd(),
+			destroyCmd(),
+			projectInfoCmd(),
 			projectBindCmd(),
 			projectUnbindCmd(),
 			projectAliasCmd(),
 		},
 	}
+}
+
+// hiddenAlias returns a copy of the command with Hidden set to true.
+func hiddenAlias(cmd *cli.Command) *cli.Command {
+	cmd.Hidden = true
+	return cmd
 }
 
 func projectInitCmd() *cli.Command {
@@ -532,37 +549,85 @@ func projectListCmd() *cli.Command {
 	}
 }
 
-func projectStatusCmd() *cli.Command {
+func projectInfoCmd() *cli.Command {
 	return &cli.Command{
-		Name:  "status",
-		Usage: "Show service connectivity status",
+		Name:  "info",
+		Usage: "Show project status, services, and alias overview",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			var composeFile string
-			var err error
-			var projectDir string
+			loc, err := config.FindForgeRC(".")
+			if err != nil {
+				return err
+			}
+			project := loc.Project
 
-			loc, projErr := config.FindForgeRC(".")
-			if projErr == nil {
-				projectDir = loc.Dir
-				composeFile, err = docker.ResolveComposeFile(loc.Dir, loc.Project.Environment.ComposeFile)
+			// Project header
+			fmt.Println(ui.TitleStyle.Render(project.Name))
+			if project.Description != "" {
+				fmt.Println("  " + ui.DescStyle.Render(project.Description))
+			}
+			fmt.Println("  " + ui.DescStyle.Render("Code:") + " " + ui.CmdStyle.Render(project.Code))
+			fmt.Println()
+
+			// Service status
+			composeFile, cfErr := docker.ResolveComposeFile(loc.Dir, project.Environment.ComposeFile)
+			if cfErr == nil {
+				statuses, sErr := docker.GetServiceStatus(composeFile, loc.Dir)
+				if sErr == nil && len(statuses) > 0 {
+					displayServiceStatus(statuses)
+					fmt.Println()
+				}
+			}
+
+			// Alias overview
+			if len(project.Environment.Alias) > 0 {
+				globalCfg, _ := config.ReadConfig()
+				bindings := bind.ComputeBindings(project, globalCfg.CloudflareDomain)
+
+				maxName := 0
+				maxPort := 0
+				for _, b := range bindings {
+					if len(b.Container) > maxName {
+						maxName = len(b.Container)
+					}
+					portStr := strconv.Itoa(b.Port)
+					if len(portStr) > maxPort {
+						maxPort = len(portStr)
+					}
+				}
+
+				fmt.Println(ui.HeadingStyle.Render("Aliases:"))
+				fmt.Println()
+				for _, b := range bindings {
+					portStr := strconv.Itoa(b.Port)
+					namePad := maxName - len(b.Container) + 2
+					portPad := maxPort - len(portStr) + 2
+
+					domainDisplay := b.Domain
+					if b.Path != "" {
+						domainDisplay += b.Path
+					}
+
+					var schemeLabel string
+					if b.Public {
+						schemeLabel = ui.TitleStyle.Render("CF")
+					} else if b.HTTPS {
+						schemeLabel = ui.TitleStyle.Render("HTTPS")
+					} else {
+						schemeLabel = ui.WarningStyle.Render("HTTP")
+					}
+
+					fmt.Printf("  %s%*s%s%*s→  %s  %s\n",
+						ui.CmdStyle.Render(b.Container),
+						namePad, "",
+						ui.CmdStyle.Render(portStr),
+						portPad, "",
+						ui.DescStyle.Render(domainDisplay),
+						schemeLabel)
+				}
 			} else {
-				projectDir = "."
-				composeFile, err = docker.ResolveComposeFile(".", "")
-			}
-			if err != nil {
-				return fmt.Errorf("no compose file found")
+				fmt.Println(ui.DescStyle.Render("No aliases defined."))
 			}
 
-			statuses, err := docker.GetServiceStatus(composeFile, projectDir)
-			if err != nil {
-				return fmt.Errorf("failed to parse compose file: %w", err)
-			}
-
-			if len(statuses) == 0 {
-				return fmt.Errorf("no services found in compose file")
-			}
-
-			displayServiceStatus(statuses)
 			return nil
 		},
 	}
@@ -729,37 +794,97 @@ func startCmd() *cli.Command {
 
 func stopCmd() *cli.Command {
 	return &cli.Command{
-		Name:  "stop",
-		Usage: "Stop the project environment",
+		Name:      "stop",
+		Usage:     "Stop the project environment",
+		ArgsUsage: "[all|<project name>]",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			loc, err := config.FindForgeRC(".")
-			if err != nil {
-				return err
-			}
-			p := loc.Project
+			arg := cmd.Args().First()
 
-			// Legacy commands format
-			if p.Environment.IsLegacy() {
-				fmt.Println(ui.WarningStyle.Render("⚠ .forgerc.json uses legacy \"commands\" format. Migrate to \"hooks\" + native compose."))
-				return docker.RunHooks(p.Environment.Commands.Stop, loc.Dir)
-			}
+			switch {
+			case arg == "":
+				// Default: stop project in current directory
+				loc, err := config.FindForgeRC(".")
+				if err != nil {
+					return err
+				}
+				return stopProject(loc)
 
-			composeFile, err := docker.ResolveComposeFile(loc.Dir, p.Environment.ComposeFile)
-			if err != nil {
-				return err
-			}
+			case strings.EqualFold(arg, "all"):
+				return stopAllProjects()
 
-			if err := docker.RunHooks(p.Environment.Hooks.PreStop, loc.Dir); err != nil {
-				return err
+			default:
+				loc, err := config.FindRegisteredProject(arg)
+				if err != nil {
+					return err
+				}
+				return stopProject(loc)
 			}
-
-			if err := docker.ComposeStop(composeFile, loc.Dir); err != nil {
-				return err
-			}
-
-			return docker.RunHooks(p.Environment.Hooks.PostStop, loc.Dir)
 		},
 	}
+}
+
+// stopProject stops a single project given its location.
+func stopProject(loc config.ProjectLocation) error {
+	p := loc.Project
+
+	// Legacy commands format
+	if p.Environment.IsLegacy() {
+		fmt.Println(ui.WarningStyle.Render("⚠ .forgerc.json uses legacy \"commands\" format. Migrate to \"hooks\" + native compose."))
+		return docker.RunHooks(p.Environment.Commands.Stop, loc.Dir)
+	}
+
+	composeFile, err := docker.ResolveComposeFile(loc.Dir, p.Environment.ComposeFile)
+	if err != nil {
+		return err
+	}
+
+	if err := docker.RunHooks(p.Environment.Hooks.PreStop, loc.Dir); err != nil {
+		return err
+	}
+
+	if err := docker.ComposeStop(composeFile, loc.Dir); err != nil {
+		return err
+	}
+
+	return docker.RunHooks(p.Environment.Hooks.PostStop, loc.Dir)
+}
+
+// stopAllProjects stops all registered projects, continuing on failure.
+func stopAllProjects() error {
+	paths, err := config.ReadProjects()
+	if err != nil {
+		return fmt.Errorf("could not read projects list: %w", err)
+	}
+
+	if len(paths) == 0 {
+		fmt.Println(ui.DescStyle.Render("No projects registered."))
+		return nil
+	}
+
+	var failed []string
+
+	for _, p := range paths {
+		project, err := config.ReadForgeRC(p)
+		if err != nil {
+			fmt.Println("  " + ui.ErrStyle.Render("✗") + " " + ui.CmdStyle.Render(p) + " " + ui.ErrStyle.Render("could not read .forgerc.json"))
+			failed = append(failed, p)
+			continue
+		}
+
+		loc := config.ProjectLocation{Project: project, Dir: p}
+		fmt.Println("  " + ui.DescStyle.Render("Stopping") + " " + ui.CmdStyle.Render(project.Name) + ui.DescStyle.Render("..."))
+		if err := stopProject(loc); err != nil {
+			fmt.Println("  " + ui.ErrStyle.Render("✗") + " " + ui.CmdStyle.Render(project.Name) + " " + ui.ErrStyle.Render(err.Error()))
+			failed = append(failed, project.Name)
+		} else {
+			fmt.Println("  " + ui.SuccessStyle.Render("✓") + " " + ui.CmdStyle.Render(project.Name) + " " + ui.SuccessStyle.Render("stopped"))
+		}
+	}
+
+	if len(failed) > 0 {
+		return fmt.Errorf("failed to stop %d project(s): %s", len(failed), strings.Join(failed, ", "))
+	}
+	return nil
 }
 
 func destroyCmd() *cli.Command {
@@ -1177,6 +1302,8 @@ func projectAliasAddCmd() *cli.Command {
 				ui.TitleStyle.Render(scheme),
 				cfLabel)
 
+			autoBindProject(project)
+
 			return nil
 		},
 	}
@@ -1262,6 +1389,8 @@ func projectAliasRemoveCmd() *cli.Command {
 				ui.SuccessStyle.Render("✓"),
 				ui.CmdStyle.Render(serviceName),
 				ui.DescStyle.Render("removed"))
+
+			autoBindProject(project)
 
 			return nil
 		},
@@ -1376,6 +1505,52 @@ func projectAliasInfoCmd() *cli.Command {
 			return nil
 		},
 	}
+}
+
+// --- Auto-bind helpers ---
+
+func autoBindProject(project config.ForgeProject) {
+	if len(project.Environment.Alias) == 0 {
+		autoUnbindProject(project)
+		return
+	}
+	if err := ensureForgeDir(); err != nil {
+		fmt.Println("  " + ui.WarningStyle.Render("auto-bind skipped: "+err.Error()))
+		return
+	}
+	result, err := bind.Bind(project)
+	if err != nil {
+		fmt.Println("  " + ui.WarningStyle.Render("auto-bind failed: "+err.Error()))
+		return
+	}
+	// Condensed bind summary
+	fmt.Println()
+	for _, b := range result.Bindings {
+		domain := b.Domain
+		if b.Path != "" {
+			domain += b.Path
+		}
+		scheme := "http"
+		if b.HTTPS && result.HasCerts {
+			scheme = "https"
+		}
+		label := ""
+		if b.Public {
+			label = " " + ui.TitleStyle.Render("CF")
+		}
+		fmt.Printf("  %s %s%s\n", ui.SuccessStyle.Render("→"), ui.CmdStyle.Render(scheme+"://"+domain), label)
+	}
+}
+
+func autoUnbindProject(project config.ForgeProject) {
+	if err := ensureForgeDir(); err != nil {
+		return
+	}
+	if _, err := bind.Unbind(project); err != nil {
+		fmt.Println("  " + ui.WarningStyle.Render("auto-unbind failed: "+err.Error()))
+		return
+	}
+	fmt.Println("  " + ui.DescStyle.Render("domains unbound"))
 }
 
 // --- Pointer helpers ---

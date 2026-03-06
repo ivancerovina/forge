@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type EnvironmentCommands struct {
@@ -41,6 +42,7 @@ type Environment struct {
 func (e Environment) IsLegacy() bool { return e.Commands != nil }
 
 type ForgeProject struct {
+	Schema      string      `json:"$schema,omitempty"`
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
 	Code        string      `json:"code"`
@@ -220,8 +222,31 @@ func UnregisterProject(dir string) (bool, error) {
 	return true, nil
 }
 
+// FindRegisteredProject looks up a registered project by name (case-insensitive).
+// It reads all registered project paths, loads each .forgerc.json, and returns
+// the first match.
+func FindRegisteredProject(name string) (ProjectLocation, error) {
+	paths, err := ReadProjects()
+	if err != nil {
+		return ProjectLocation{}, fmt.Errorf("could not read projects list: %w", err)
+	}
+
+	for _, p := range paths {
+		project, err := ReadForgeRC(p)
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(project.Name, name) {
+			return ProjectLocation{Project: project, Dir: p}, nil
+		}
+	}
+
+	return ProjectLocation{}, fmt.Errorf("no registered project found with name %q", name)
+}
+
 // WriteForgeRC writes the given ForgeProject as .forgerc.json in the given directory.
 func WriteForgeRC(dir string, project ForgeProject) error {
+	project.Schema = SchemaURI()
 	data, err := json.MarshalIndent(project, "", "  ")
 	if err != nil {
 		return err
