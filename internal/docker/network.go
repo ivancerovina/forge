@@ -75,3 +75,52 @@ func getContainerID(composeFilePath, projectDir, service string) (string, error)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
+// CheckAliasKeys checks whether .forgerc.json alias keys match compose service
+// names instead of container names. Returns warnings for any alias key that
+// matches a service name that has a different container_name set — meaning
+// Traefik won't be able to resolve it on forge-network.
+func CheckAliasKeys(composeFilePath string, aliasKeys []string) []string {
+	data, err := readComposeData(composeFilePath)
+	if err != nil {
+		return nil
+	}
+
+	var compose composeFile
+	if err := yaml.Unmarshal(data, &compose); err != nil {
+		return nil
+	}
+
+	// Build lookup maps
+	serviceNames := make(map[string]string) // service name → container_name (if set)
+	containerNames := make(map[string]bool)  // all known container names
+	for name, svc := range compose.Services {
+		serviceNames[name] = svc.ContainerName
+		if svc.ContainerName != "" {
+			containerNames[svc.ContainerName] = true
+		}
+	}
+
+	var warnings []string
+	for _, key := range aliasKeys {
+		// If the key matches a service name that has a different container_name
+		if containerName, isService := serviceNames[key]; isService && containerName != "" && containerName != key {
+			warnings = append(warnings, fmt.Sprintf(
+				"alias %q matches compose service name, but container_name is %q — use the container name instead",
+				key, containerName,
+			))
+			continue
+		}
+
+		// If the key doesn't match any service name or container name, it won't resolve
+		_, isService := serviceNames[key]
+		if !isService && !containerNames[key] {
+			warnings = append(warnings, fmt.Sprintf(
+				"alias %q does not match any compose service or container name — Traefik won't be able to route to it",
+				key,
+			))
+		}
+	}
+
+	return warnings
+}

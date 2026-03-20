@@ -69,41 +69,108 @@
           "additionalProperties": false
         },
         "alias": {
-          "type": "object",
-          "description": "Maps container/service names to Traefik routing rules",
-          "additionalProperties": {
-            "type": "object",
-            "required": ["port"],
-            "properties": {
-              "port": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 65535,
-                "description": "Service port"
-              },
-              "alias": {
-                "type": ["string", "null"],
-                "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$",
-                "description": "Subdomain prefix. null or omitted = index domain (<code>.local)"
-              },
-              "path": {
-                "type": "string",
-                "pattern": "^/[a-zA-Z0-9/_-]+$",
-                "description": "Path prefix for Traefik routing (e.g. /api). Must start with /"
-              },
-              "https": {
-                "type": "boolean",
-                "default": true,
-                "description": "Enable HTTPS (default true). Set false for HTTP only"
-              },
-              "cloudflare": {
-                "type": "boolean",
-                "default": false,
-                "description": "Also create a public Traefik router via Cloudflare tunnel"
+          "description": "Service alias definitions for Traefik routing. Array format (preferred) or legacy map format.",
+          "oneOf": [
+            {
+              "type": "array",
+              "description": "Array of alias entries (preferred format)",
+              "items": {
+                "type": "object",
+                "required": ["service", "port"],
+                "properties": {
+                  "service": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                    "description": "Docker Compose service or container name"
+                  },
+                  "port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535,
+                    "description": "Service port"
+                  },
+                  "alias": {
+                    "type": ["string", "null"],
+                    "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$",
+                    "description": "Subdomain prefix. null or omitted = index domain (<code>.test)"
+                  },
+                  "path": {
+                    "type": "string",
+                    "pattern": "^/[a-zA-Z0-9/_-]+$",
+                    "description": "Path prefix for Traefik routing (e.g. /api). Must start with /"
+                  },
+                  "forward_pathname": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Forward path prefix to backend as-is (default false = strip prefix before forwarding)"
+                  },
+                  "target_path": {
+                    "type": "string",
+                    "pattern": "^/[a-zA-Z0-9/_-]+$",
+                    "description": "Backend target path appended to the service URL (e.g. /test)"
+                  },
+                  "https": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable HTTPS (default true). Set false for HTTP only"
+                  },
+                  "cloudflare": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Also create a public Traefik router via Cloudflare tunnel"
+                  }
+                },
+                "additionalProperties": false
               }
             },
-            "additionalProperties": false
-          }
+            {
+              "type": "object",
+              "description": "Legacy map format (keys are service names). Automatically migrated to array format on write.",
+              "additionalProperties": {
+                "type": "object",
+                "required": ["port"],
+                "properties": {
+                  "port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535,
+                    "description": "Service port"
+                  },
+                  "alias": {
+                    "type": ["string", "null"],
+                    "pattern": "^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$",
+                    "description": "Subdomain prefix. null or omitted = index domain (<code>.test)"
+                  },
+                  "path": {
+                    "type": "string",
+                    "pattern": "^/[a-zA-Z0-9/_-]+$",
+                    "description": "Path prefix for Traefik routing (e.g. /api). Must start with /"
+                  },
+                  "forward_pathname": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Forward path prefix to backend as-is (default false = strip prefix before forwarding)"
+                  },
+                  "target_path": {
+                    "type": "string",
+                    "pattern": "^/[a-zA-Z0-9/_-]+$",
+                    "description": "Backend target path appended to the service URL (e.g. /test)"
+                  },
+                  "https": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable HTTPS (default true). Set false for HTTP only"
+                  },
+                  "cloudflare": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Also create a public Traefik router via Cloudflare tunnel"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          ]
         },
         "commands": {
           "type": "object",

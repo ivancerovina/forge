@@ -87,8 +87,8 @@ func writeTraefikConfig(project config.ForgeProject, bindings []DomainBinding) e
 			Service: serviceKey,
 		}
 
-		// Add StripPrefix middleware for path-based routes
-		if b.Path != "" {
+		// Add StripPrefix middleware for path-based routes (unless forwarding pathname)
+		if b.Path != "" && !b.ForwardPathname {
 			stripKey := "strip-" + routerKey
 			if cfg.HTTP.Middlewares == nil {
 				cfg.HTTP.Middlewares = make(map[string]traefikMiddleware)
@@ -138,7 +138,7 @@ func writeTraefikConfig(project config.ForgeProject, bindings []DomainBinding) e
 			cfg.HTTP.Services[serviceKey] = traefikService{
 				LoadBalancer: traefikLB{
 					Servers: []traefikServer{
-						{URL: fmt.Sprintf("http://%s:%d", b.Container, b.Port)},
+						{URL: fmt.Sprintf("http://%s:%d%s", b.Container, b.Port, b.TargetPath)},
 					},
 				},
 			}

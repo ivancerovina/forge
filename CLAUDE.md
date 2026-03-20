@@ -37,10 +37,10 @@ internal/
 
 `.forgerc.json` — created in the current directory by `forge project init`. Stores project metadata and environment config. Most commands auto-discover `.forgerc.json` by walking up the directory tree from the current directory, stopping at a `.git` boundary or the user's home directory. This means commands like `forge project start` work from any subdirectory within a project.
 
-Every `.forgerc.json` written by forge includes a `$schema` field pointing to `~/.forge/schemas/forgerc.schema.json`. This enables autocompletion and validation in editors that support JSON Schema (VS Code, JetBrains, etc.). The schema file is kept in sync with the binary — it is written on every `ensureForgeDir()` call.
+Every `.forgerc.json` written by forge includes a `$schema` field pointing to the canonical GitHub-hosted schema. This enables autocompletion and validation in editors that support JSON Schema (VS Code, JetBrains, etc.). The schema file is also written locally to `~/.forge/schemas/forgerc.schema.json` on every `ensureForgeDir()` call.
 ```json
 {
-  "$schema": "file:///home/user/.forge/schemas/forgerc.schema.json",
+  "$schema": "https://raw.githubusercontent.com/ivancerovina/forge/refs/heads/master/internal/config/forgerc.schema.json",
   "name": "My Project",
   "description": "Some description",
   "code": "my-project",
@@ -54,20 +54,23 @@ Every `.forgerc.json` written by forge includes a `$schema` field pointing to `~
       "pre_destroy": [],
       "post_destroy": []
     },
-    "alias": {
-      "myproject-frontend": { "port": 5173, "alias": null, "cloudflare": true },
-      "myproject-backend": { "port": 3000, "alias": "backend", "path": "/api" }
-    }
+    "alias": [
+      { "service": "myproject-frontend", "port": 5173, "alias": null, "cloudflare": true },
+      { "service": "myproject-backend", "port": 3000, "alias": "backend", "path": "/api", "target_path": "/v2" }
+    ]
   }
 }
 ```
 
 - `environment.compose_file` — path to compose file (relative to project dir). Omit or leave empty for auto-detection (`compose.yaml` > `compose.yml` > `docker-compose.yml` > `docker-compose.yaml`).
 - `environment.hooks` — shell commands run before/after native Docker Compose operations
-- `environment.alias` — maps container/service names to Traefik routing rules:
-  - `alias: null` → `<project-code>.local` (index, no subdomain)
-  - `alias: "backend"` → `backend.<project-code>.local`
-  - `path: "/api"` → path prefix routing with StripPrefix middleware
+- `environment.alias` — array of alias entries defining Traefik routing rules (legacy map format auto-migrated on write):
+  - `service: "name"` → Docker Compose service/container name
+  - `alias: null` → `<project-code>.test` (index, no subdomain)
+  - `alias: "backend"` → `backend.<project-code>.test`
+  - `path: "/api"` → frontend path prefix routing with StripPrefix middleware
+  - `forward_pathname: true` → forward the path prefix to the backend as-is (default strips it)
+  - `target_path: "/v2"` → backend target path appended to the service URL (e.g. `http://container:port/v2`)
   - `cloudflare: true` → also creates a public Traefik router via Cloudflare tunnel
 - Legacy `environment.commands` format is still supported with a deprecation warning
 
@@ -119,7 +122,7 @@ Initialize a new forge project in the current directory (creates `.forgerc.json`
 
 ### `forge project bind` / `forge project unbind`
 
-- Generates Traefik routing config for all aliases (local `.local` domains + Cloudflare public domains)
+- Generates Traefik routing config for all aliases (local `.test` domains + Cloudflare public domains)
 - Only local domains are added to `/etc/hosts` (public CF domains are routed through the tunnel)
 - No longer requires `sudo` — prompts for password internally when writing `/etc/hosts`
 - Note: forge refuses to run as root (`sudo forge ...` is blocked)
@@ -133,7 +136,7 @@ Initialize a new forge project in the current directory (creates `.forgerc.json`
 
 ### `forge project alias add` / `forge project alias remove` / `forge project alias info`
 
-- `forge project alias add <service> --port <port>` — add a service alias (supports `--alias`, `--path`, `--http`, `--cloudflare`, `--force`)
+- `forge project alias add <service> --port <port>` — add a service alias (supports `--alias`, `--path`, `--forward-pathname`, `--target-path`, `--http`, `--cloudflare`, `--force`)
 - `forge project alias remove <service>` — remove a service alias
 - `forge project alias info [service]` — show alias details (single or all)
 - All three support interactive mode (run without arguments)
@@ -174,10 +177,32 @@ Purple color palette. All styled output uses lipgloss with these colors:
 - Muted: `#6C6C6C` (dim) — descriptions, secondary text
 - Error: `#FF6B6B` (red) — error messages
 
+## Skills (Slash Commands)
+
+User-invoked commands in `.claude/skills/`:
+
+| Skill | Purpose | Agent Dependencies |
+|-------|---------|-------------------|
+| `/add-command [name]` | Scaffold a new CLI command across all required files | `go-check`, `struct-sync`, `regression-scan` |
+| `/test-forge [command]` | Build binary and run structured smoke tests | `go-check`, `regression-scan` |
+| `/sync-docs [target]` | Synchronize CLAUDE.md, SKILL.md, and schema with codebase | `struct-sync` |
+| `/forge` | Agent-facing reference for the forge CLI (not user-invoked) | — |
+
+## Agents
+
+Auto-invoked agents in `.claude/agents/`. Claude delegates to these during work — no slash command needed.
+
+| Agent | Model | Trigger | Purpose |
+|-------|-------|---------|---------|
+| `go-check` | haiku | After editing `.go` files | Build, `go vet`, format check |
+| `struct-sync` | sonnet | After modifying config structs | Verify field exists across all 12 touchpoints (struct → schema → CLI → docs) |
+| `regression-scan` | sonnet | Before finalizing a feature | Trace callers, check interactive/non-interactive parity, error handling, edge cases |
+
 ## Documentation Maintenance
 
 - Update `CLAUDE.md` when it gets outdated, and after every major change
 - Update `.claude/skills/forge/SKILL.md` when it gets outdated, or on major changes. Keep only stuff relevant to the agent there
+- Run `/sync-docs` after major changes to catch drift across CLAUDE.md, SKILL.md, and the JSON schema
 
 ## Code Conventions
 

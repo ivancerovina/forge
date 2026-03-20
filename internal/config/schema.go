@@ -10,13 +10,9 @@ import (
 //go:embed forgerc.schema.json
 var forgeRCSchema []byte
 
-// SchemaURI returns the file:// URI pointing to the installed schema file.
+// SchemaURI returns the canonical URL for the forge JSON Schema.
 func SchemaURI() string {
-	home, err := UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return "file://" + filepath.Join(home, ".forge", "schemas", "forgerc.schema.json")
+	return "https://raw.githubusercontent.com/ivancerovina/forge/refs/heads/master/internal/config/forgerc.schema.json"
 }
 
 // EnsureSchema writes the embedded JSON Schema to ~/.forge/schemas/forgerc.schema.json.

@@ -22,7 +22,8 @@ type composeFile struct {
 }
 
 type composeService struct {
-	Networks yaml.Node `yaml:"networks"`
+	ContainerName string    `yaml:"container_name"`
+	Networks      yaml.Node `yaml:"networks"`
 }
 
 func (s *composeService) hasNetwork(name string) bool {

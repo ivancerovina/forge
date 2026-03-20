@@ -91,6 +91,38 @@ func addHostsEntries(projectCode string, domains []string) (added, existing, war
 	return added, existing, warned, nil
 }
 
+// removeLegacyHostsEntries removes any /etc/hosts entries for a project that
+// still use the old .local TLD. Called during bind to migrate to .test.
+func removeLegacyHostsEntries(projectCode string) {
+	data, err := os.ReadFile("/etc/hosts")
+	if err != nil {
+		return
+	}
+
+	marker := "# forge:" + projectCode
+	lines := strings.Split(string(data), "\n")
+	var keep []string
+	changed := false
+
+	for _, line := range lines {
+		if strings.Contains(line, marker) && strings.Contains(line, legacyTLD) {
+			changed = true
+			continue
+		}
+		keep = append(keep, line)
+	}
+
+	if !changed {
+		return
+	}
+
+	content := strings.Join(keep, "\n")
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	_ = writeHostsFile([]byte(content))
+}
+
 // removeHostsEntries removes all /etc/hosts lines tagged with the project's marker.
 func removeHostsEntries(projectCode string) (removed []string, err error) {
 	f, err := os.Open("/etc/hosts")

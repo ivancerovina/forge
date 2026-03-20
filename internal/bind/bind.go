@@ -2,19 +2,28 @@ package bind
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/ivancerovina/forge/internal/config"
 	"github.com/ivancerovina/forge/internal/system"
 )
 
+// LocalTLD is the top-level domain used for local development bindings.
+// Changed from ".local" to ".test" because macOS treats .local as mDNS (Bonjour),
+// causing ~5s DNS lookup delays. ".test" is IANA-reserved for testing.
+const LocalTLD = ".test"
+
+// legacyTLD is the old TLD that needs to be cleaned up on re-bind.
+const legacyTLD = ".local"
+
 type DomainBinding struct {
-	Domain    string
-	Container string
-	Port      int
-	Path      string
-	HTTPS     bool
-	Public    bool // cloudflare tunnel binding — no /etc/hosts, HTTP only
+	Domain          string
+	Container       string
+	Port            int
+	Path            string
+	ForwardPathname bool   // true = keep path prefix when forwarding to backend
+	TargetPath      string // backend target path appended to service URL
+	HTTPS           bool
+	Public          bool // cloudflare tunnel binding — no /etc/hosts, HTTP only
 }
 
 type BindResult struct {
@@ -32,33 +41,28 @@ type UnbindResult struct {
 }
 
 // ComputeBindings computes domain bindings from project alias configuration.
-// Keys are sorted for deterministic output. If cloudflareDomain is non-empty,
-// aliases with Cloudflare enabled will produce an additional public binding.
+// If cloudflareDomain is non-empty, aliases with Cloudflare enabled will
+// produce an additional public binding.
 func ComputeBindings(project config.ForgeProject, cloudflareDomain string) []DomainBinding {
-	// Sort alias map keys for deterministic order
-	keys := make([]string, 0, len(project.Environment.Alias))
-	for k := range project.Environment.Alias {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
 	var bindings []DomainBinding
-	for _, container := range keys {
-		entry := project.Environment.Alias[container]
+	for _, entry := range project.Environment.Alias {
+		container := entry.Service
 
 		// Local binding (always generated)
 		var localDomain string
 		if entry.Alias == nil {
-			localDomain = project.Code + ".local"
+			localDomain = project.Code + LocalTLD
 		} else {
-			localDomain = *entry.Alias + "." + project.Code + ".local"
+			localDomain = *entry.Alias + "." + project.Code + LocalTLD
 		}
 		bindings = append(bindings, DomainBinding{
-			Domain:    localDomain,
-			Container: container,
-			Port:      entry.Port,
-			Path:      entry.Path,
-			HTTPS:     entry.HTTPS == nil || *entry.HTTPS,
+			Domain:          localDomain,
+			Container:       container,
+			Port:            entry.Port,
+			Path:            entry.Path,
+			ForwardPathname: entry.ForwardPathname != nil && *entry.ForwardPathname,
+			TargetPath:      entry.TargetPath,
+			HTTPS:           entry.HTTPS == nil || *entry.HTTPS,
 		})
 
 		// Cloudflare public binding (if enabled and domain configured)
@@ -70,12 +74,14 @@ func ComputeBindings(project config.ForgeProject, cloudflareDomain string) []Dom
 				cfDomain = *entry.Alias + "." + project.Code + "." + cloudflareDomain
 			}
 			bindings = append(bindings, DomainBinding{
-				Domain:    cfDomain,
-				Container: container,
-				Port:      entry.Port,
-				Path:      entry.Path,
-				HTTPS:     false,
-				Public:    true,
+				Domain:          cfDomain,
+				Container:       container,
+				Port:            entry.Port,
+				Path:            entry.Path,
+				ForwardPathname: entry.ForwardPathname != nil && *entry.ForwardPathname,
+				TargetPath:      entry.TargetPath,
+				HTTPS:           false,
+				Public:          true,
 			})
 		}
 	}
@@ -89,9 +95,9 @@ func Bind(project config.ForgeProject) (*BindResult, error) {
 
 	// Validate: error if any alias has cloudflare enabled but no domain configured
 	if globalCfg.CloudflareDomain == "" {
-		for name, entry := range project.Environment.Alias {
+		for _, entry := range project.Environment.Alias {
 			if entry.Cloudflare != nil && *entry.Cloudflare {
-				return nil, fmt.Errorf("alias %q has cloudflare enabled but no cloudflare_domain is configured — run: forge tunnel set-domain <domain>", name)
+				return nil, fmt.Errorf("alias %q has cloudflare enabled but no cloudflare_domain is configured — run: forge tunnel set-domain <domain>", entry.Service)
 			}
 		}
 	}
@@ -108,6 +114,9 @@ func Bind(project config.ForgeProject) (*BindResult, error) {
 			localDomains = append(localDomains, b.Domain)
 		}
 	}
+
+	// Remove legacy .local entries for this project (migration from .local → .test)
+	removeLegacyHostsEntries(project.Code)
 
 	// Add hosts entries
 	added, existing, warned, err := addHostsEntries(project.Code, localDomains)

@@ -4,12 +4,12 @@
 
 # Forge
 
-A CLI tool for managing local development projects with Docker Compose and Traefik. Forge gives every project clean local domains like `https://my-project.local`, handles service discovery on a shared Docker network, and optionally exposes services publicly via Cloudflare Tunnels.
+A CLI tool for managing local development projects with Docker Compose and Traefik. Forge gives every project clean local domains like `https://my-project.test`, handles service discovery on a shared Docker network, and optionally exposes services publicly via Cloudflare Tunnels.
 
 ## Features
 
 - **One command to start** — `forge start` runs Docker Compose, connects services to a shared network, and shows status.
-- **Local domains** — `forge project bind` writes `/etc/hosts` entries and Traefik routing so `https://my-project.local` just works.
+- **Local domains** — `forge project bind` writes `/etc/hosts` entries and Traefik routing so `https://my-project.test` just works.
 - **HTTPS by default** — Wildcard TLS via [mkcert](https://github.com/FiloSottile/mkcert) with automatic HTTP-to-HTTPS redirect.
 - **No changes to your compose file** — Services are connected to the shared network at runtime.
 - **Path-based routing** — Route `/api` to a backend and `/` to a frontend on the same domain.
@@ -65,7 +65,7 @@ forge project alias add backend --port 3000 --alias api --path /api
 # Start
 forge project start
 
-# Open https://my-app.local
+# Open https://my-app.test
 ```
 
 ## Existing Project
@@ -136,7 +136,7 @@ All alias commands also work interactively (run without arguments). `alias add` 
 | Flag | Description |
 |------|-------------|
 | `--port, -P` | Service port (required) |
-| `--alias, -a` | Subdomain (`api` becomes `api.<code>.local`). Omit for root domain |
+| `--alias, -a` | Subdomain (`api` becomes `api.<code>.test`). Omit for root domain |
 | `--path` | Path prefix (e.g. `/api`) with automatic StripPrefix |
 | `--http` | HTTP only (default is HTTPS) |
 | `--cloudflare` | Also bind via Cloudflare tunnel |
@@ -198,9 +198,9 @@ Alias keys are Docker Compose service names. Given project code `my-project`:
 
 | `alias` value | `path` | Resulting domain |
 |---------------|--------|------------------|
-| `null` (omit) | — | `my-project.local` |
-| `null` | `/api` | `my-project.local/api` |
-| `"docs"` | — | `docs.my-project.local` |
+| `null` (omit) | — | `my-project.test` |
+| `null` | `/api` | `my-project.test/api` |
+| `"docs"` | — | `docs.my-project.test` |
 
 With `cloudflare: true` and domain `dev.example.com`, the same patterns apply to `my-project.dev.example.com`.
 

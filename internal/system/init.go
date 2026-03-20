@@ -101,7 +101,7 @@ func EnsureNetwork() (string, error) {
 		return "already exists", nil
 	}
 
-	create := exec.Command("docker", "network", "create", "forge-network")
+	create := exec.Command("docker", "network", "create", "--subnet=10.100.0.0/16", "forge-network")
 	create.Stdout = nil
 	create.Stderr = nil
 	if err := create.Run(); err != nil {
@@ -137,8 +137,8 @@ func GenerateCerts(forgeDir string) (string, error) {
 		return "", fmt.Errorf("mkcert -install failed: %w", err)
 	}
 
-	// Generate wildcard cert for *.local
-	gen := exec.Command("mkcert", "-cert-file", certPath, "-key-file", keyPath, "*.local")
+	// Generate wildcard cert for *.test
+	gen := exec.Command("mkcert", "-cert-file", certPath, "-key-file", keyPath, "*.test")
 	gen.Stdout = nil
 	gen.Stderr = nil
 	if err := gen.Run(); err != nil {
@@ -165,10 +165,10 @@ func RegenerateCerts() error {
 	certPath := filepath.Join(certsDir, "local.pem")
 	keyPath := filepath.Join(certsDir, "local-key.pem")
 
-	// Collect domains: start with *.local
-	domains := []string{"*.local"}
+	// Collect domains: start with *.test
+	domains := []string{"*.test"}
 
-	// Add *.<code>.local for each registered project
+	// Add *.<code>.test for each registered project
 	paths, err := config.ReadProjects()
 	if err == nil {
 		for _, p := range paths {
@@ -176,7 +176,7 @@ func RegenerateCerts() error {
 			if err != nil {
 				continue
 			}
-			domains = append(domains, "*."+proj.Code+".local")
+			domains = append(domains, "*."+proj.Code+".test")
 		}
 	}
 

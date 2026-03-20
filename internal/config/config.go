@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -15,11 +16,15 @@ type EnvironmentCommands struct {
 }
 
 type AliasEntry struct {
-	Port       int     `json:"port"`
-	Alias      *string `json:"alias"`              // nil = index (just <code>.local), string = <alias>.<code>.local
-	Path       string  `json:"path,omitempty"`     // e.g. "/api" — path prefix for Traefik routing
-	HTTPS      *bool   `json:"https,omitempty"`    // nil/true = HTTPS, false = HTTP only
-	Cloudflare *bool   `json:"cloudflare,omitempty"` // nil/false = local only, true = also bind via CF tunnel
+	Service         string   `json:"service"`
+	Port            int      `json:"port"`
+	Alias           *string  `json:"alias"`                      // nil = index (just <code>.test), string = <alias>.<code>.test
+	Path            string   `json:"path,omitempty"`             // e.g. "/api" — path prefix for Traefik routing
+	ForwardPathname *bool    `json:"forward_pathname,omitempty"` // nil/false = strip path prefix, true = forward as-is
+	TargetPath      string   `json:"target_path,omitempty"`      // backend path appended to service URL (e.g. /test)
+	HTTPS           *bool    `json:"https,omitempty"`            // nil/true = HTTPS, false = HTTP only
+	Cloudflare      *bool    `json:"cloudflare,omitempty"`       // nil/false = local only, true = also bind via CF tunnel
+	BasicAuth       []string `json:"basic_auth,omitempty"`       // bcrypt-hashed "user:hash" pairs for Traefik basicAuth
 }
 
 type Hooks struct {
@@ -32,10 +37,111 @@ type Hooks struct {
 }
 
 type Environment struct {
-	ComposeFile string                `json:"compose_file,omitempty"`
-	Hooks       Hooks                 `json:"hooks,omitempty"`
-	Alias       map[string]AliasEntry `json:"alias"`
-	Commands    *EnvironmentCommands  `json:"commands,omitempty"` // legacy, nil when absent
+	ComposeFile string               `json:"compose_file,omitempty"`
+	Hooks       Hooks                `json:"hooks,omitempty"`
+	Alias       []AliasEntry         `json:"alias"`
+	Commands    *EnvironmentCommands `json:"commands,omitempty"` // legacy, nil when absent
+}
+
+// UnmarshalJSON supports both the new array format and the legacy map format for Alias.
+func (e *Environment) UnmarshalJSON(data []byte) error {
+	// Intermediate struct with Alias as raw JSON
+	type envRaw struct {
+		ComposeFile string               `json:"compose_file,omitempty"`
+		Hooks       Hooks                `json:"hooks,omitempty"`
+		Alias       json.RawMessage      `json:"alias"`
+		Commands    *EnvironmentCommands `json:"commands,omitempty"`
+	}
+	var raw envRaw
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	e.ComposeFile = raw.ComposeFile
+	e.Hooks = raw.Hooks
+	e.Commands = raw.Commands
+
+	if len(raw.Alias) == 0 || string(raw.Alias) == "null" {
+		e.Alias = nil
+		return nil
+	}
+
+	// Try array format first
+	var arr []AliasEntry
+	if err := json.Unmarshal(raw.Alias, &arr); err == nil {
+		e.Alias = arr
+		return nil
+	}
+
+	// Fall back to legacy map format
+	var m map[string]AliasEntry
+	if err := json.Unmarshal(raw.Alias, &m); err != nil {
+		return fmt.Errorf("alias must be an array or object: %w", err)
+	}
+
+	// Convert map to sorted slice
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	e.Alias = make([]AliasEntry, 0, len(m))
+	for _, k := range keys {
+		entry := m[k]
+		entry.Service = k
+		e.Alias = append(e.Alias, entry)
+	}
+	return nil
+}
+
+// --- Alias helpers ---
+
+// FindAlias returns a pointer to the AliasEntry with the given service name, or nil.
+func FindAlias(aliases []AliasEntry, service string) *AliasEntry {
+	for i := range aliases {
+		if aliases[i].Service == service {
+			return &aliases[i]
+		}
+	}
+	return nil
+}
+
+// HasAlias returns true if an alias with the given service name exists.
+func HasAlias(aliases []AliasEntry, service string) bool {
+	return FindAlias(aliases, service) != nil
+}
+
+// RemoveAlias returns a new slice with the named alias removed.
+func RemoveAlias(aliases []AliasEntry, service string) []AliasEntry {
+	result := make([]AliasEntry, 0, len(aliases))
+	for _, a := range aliases {
+		if a.Service != service {
+			result = append(result, a)
+		}
+	}
+	return result
+}
+
+// AliasServiceNames returns a sorted list of service names from the alias slice.
+func AliasServiceNames(aliases []AliasEntry) []string {
+	names := make([]string, len(aliases))
+	for i, a := range aliases {
+		names[i] = a.Service
+	}
+	sort.Strings(names)
+	return names
+}
+
+// SetAlias adds or replaces an alias entry by service name.
+func SetAlias(aliases []AliasEntry, entry AliasEntry) []AliasEntry {
+	for i := range aliases {
+		if aliases[i].Service == entry.Service {
+			aliases[i] = entry
+			return aliases
+		}
+	}
+	return append(aliases, entry)
 }
 
 // IsLegacy returns true if the environment uses the legacy "commands" format.

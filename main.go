@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -350,7 +349,7 @@ func projectInitCmd() *cli.Command {
 				Code:        code,
 				Environment: config.Environment{
 					Hooks: config.Hooks{},
-					Alias: map[string]config.AliasEntry{},
+					Alias: []config.AliasEntry{},
 				},
 			}
 
@@ -648,6 +647,13 @@ func projectBindCmd() *cli.Command {
 				return fmt.Errorf("no aliases defined in .forgerc.json — add entries to environment.alias first")
 			}
 
+			// Warn if alias keys don't match container names
+			if composeFile, cfErr := docker.ResolveComposeFile(loc.Dir, project.Environment.ComposeFile); cfErr == nil {
+				for _, w := range docker.CheckAliasKeys(composeFile, config.AliasServiceNames(project.Environment.Alias)) {
+					fmt.Println("  " + ui.WarningStyle.Render("⚠ "+w))
+				}
+			}
+
 			result, err := bind.Bind(project)
 			if err != nil {
 				return err
@@ -661,13 +667,14 @@ func projectBindCmd() *cli.Command {
 				if b.Path != "" {
 					domainDisplay += b.Path
 				}
+				backendDisplay := fmt.Sprintf("%s:%d%s", b.Container, b.Port, b.TargetPath)
 
 				if b.Public {
 					// Cloudflare tunnel binding
 					fmt.Printf("  %s %s → %s\n",
 						ui.SuccessStyle.Render("✓"),
 						ui.CmdStyle.Render("https://"+domainDisplay),
-						ui.DescStyle.Render(fmt.Sprintf("%s:%d", b.Container, b.Port))+
+						ui.DescStyle.Render(backendDisplay)+
 							" "+ui.TitleStyle.Render("(cloudflare tunnel)"))
 					continue
 				}
@@ -692,7 +699,7 @@ func projectBindCmd() *cli.Command {
 				fmt.Printf("  %s %s → %s\n",
 					ui.SuccessStyle.Render("✓"),
 					ui.CmdStyle.Render(scheme+"://"+domainDisplay),
-					ui.DescStyle.Render(fmt.Sprintf("%s:%d", b.Container, b.Port))+
+					ui.DescStyle.Render(backendDisplay)+
 						" "+status)
 			}
 
@@ -774,6 +781,13 @@ func startCmd() *cli.Command {
 			}
 			for _, name := range alreadyConnected {
 				fmt.Println("  " + ui.DescStyle.Render("–") + " " + ui.CmdStyle.Render(name) + " " + ui.DescStyle.Render("already on forge-network"))
+			}
+
+			// Warn if alias keys don't match container names
+			if len(p.Environment.Alias) > 0 {
+				for _, w := range docker.CheckAliasKeys(composeFile, config.AliasServiceNames(p.Environment.Alias)) {
+					fmt.Println("  " + ui.WarningStyle.Render("⚠ "+w))
+				}
 			}
 
 			if err := docker.RunHooks(p.Environment.Hooks.PostStart, loc.Dir); err != nil {
@@ -1123,6 +1137,8 @@ func projectAliasAddCmd() *cli.Command {
 			&cli.IntFlag{Name: "port", Aliases: []string{"P"}, Usage: "Service port"},
 			&cli.StringFlag{Name: "alias", Aliases: []string{"a"}, Usage: "Subdomain (omit for index domain)"},
 			&cli.StringFlag{Name: "path", Usage: "Path prefix (e.g. /api)"},
+			&cli.BoolFlag{Name: "forward-pathname", Usage: "Forward path prefix to backend (default strips it)"},
+			&cli.StringFlag{Name: "target-path", Usage: "Backend target path (e.g. /test)"},
 			&cli.BoolFlag{Name: "http", Usage: "HTTP only (default is HTTPS)"},
 			&cli.BoolFlag{Name: "cloudflare", Usage: "Also bind via Cloudflare tunnel"},
 			&cli.BoolFlag{Name: "force", Usage: "Overwrite existing alias"},
@@ -1141,6 +1157,8 @@ func projectAliasAddCmd() *cli.Command {
 			var port int
 			var alias string
 			var path string
+			var forwardPathname bool
+			var targetPath string
 			var https bool
 			var cloudflare bool
 
@@ -1167,7 +1185,7 @@ func projectAliasAddCmd() *cli.Command {
 							}),
 						huh.NewInput().
 							Title("Alias subdomain").
-							Description("Leave empty for index domain (<code>.local)").
+							Description("Leave empty for index domain (<code>.test)").
 							Value(&alias).
 							Validate(func(s string) error { return config.ValidateAliasSubdomain(s) }),
 						huh.NewInput().
@@ -1193,25 +1211,56 @@ func projectAliasAddCmd() *cli.Command {
 
 				port, _ = strconv.Atoi(portStr)
 
+				// Ask about forward pathname only when a path prefix is set
+				if path != "" {
+					fpForm := huh.NewForm(
+						huh.NewGroup(
+							huh.NewConfirm().
+								Title("Forward path prefix to backend?").
+								Description("No = strip prefix before forwarding (default)").
+								Affirmative("Yes").
+								Negative("No").
+								Value(&forwardPathname),
+						),
+					)
+					if err := fpForm.Run(); err != nil {
+						return err
+					}
+				}
+
+				// Ask about backend target path
+				{
+					tpForm := huh.NewForm(
+						huh.NewGroup(
+							huh.NewInput().
+								Title("Backend target path").
+								Description("Leave empty for none (e.g. /test)").
+								Value(&targetPath).
+								Validate(func(s string) error { return config.ValidatePath(s) }),
+						),
+					)
+					if err := tpForm.Run(); err != nil {
+						return err
+					}
+				}
+
 				// Check for existing entry
-				if project.Environment.Alias != nil {
-					if _, exists := project.Environment.Alias[serviceName]; exists {
-						var overwrite bool
-						confirmForm := huh.NewForm(
-							huh.NewGroup(
-								huh.NewConfirm().
-									Title(fmt.Sprintf("Alias for %q already exists. Overwrite?", serviceName)).
-									Affirmative("Yes").
-									Negative("No").
-									Value(&overwrite),
-							),
-						)
-						if err := confirmForm.Run(); err != nil {
-							return err
-						}
-						if !overwrite {
-							return nil
-						}
+				if config.HasAlias(project.Environment.Alias, serviceName) {
+					var overwrite bool
+					confirmForm := huh.NewForm(
+						huh.NewGroup(
+							huh.NewConfirm().
+								Title(fmt.Sprintf("Alias for %q already exists. Overwrite?", serviceName)).
+								Affirmative("Yes").
+								Negative("No").
+								Value(&overwrite),
+						),
+					)
+					if err := confirmForm.Run(); err != nil {
+						return err
+					}
+					if !overwrite {
+						return nil
 					}
 				}
 			} else {
@@ -1226,6 +1275,8 @@ func projectAliasAddCmd() *cli.Command {
 				port = int(cmd.Int("port"))
 				alias = cmd.String("alias")
 				path = cmd.String("path")
+				forwardPathname = cmd.Bool("forward-pathname")
+				targetPath = cmd.String("target-path")
 				https = !cmd.Bool("http")
 				cloudflare = cmd.Bool("cloudflare")
 
@@ -1241,21 +1292,25 @@ func projectAliasAddCmd() *cli.Command {
 				if err := config.ValidatePath(path); err != nil {
 					return err
 				}
+				if err := config.ValidatePath(targetPath); err != nil {
+					return err
+				}
 
 				// Check for existing entry
-				if project.Environment.Alias != nil {
-					if _, exists := project.Environment.Alias[serviceName]; exists && !cmd.Bool("force") {
-						return fmt.Errorf("alias for %q already exists (use --force to overwrite)", serviceName)
-					}
+				if config.HasAlias(project.Environment.Alias, serviceName) && !cmd.Bool("force") {
+					return fmt.Errorf("alias for %q already exists (use --force to overwrite)", serviceName)
 				}
 			}
 
 			// Build entry
-			entry := config.AliasEntry{Port: port, Path: path}
+			entry := config.AliasEntry{Service: serviceName, Port: port, Path: path, TargetPath: targetPath}
 			if alias == "" {
 				entry.Alias = nil
 			} else {
 				entry.Alias = stringPtr(alias)
+			}
+			if forwardPathname {
+				entry.ForwardPathname = boolPtr(true)
 			}
 			if !https {
 				entry.HTTPS = boolPtr(false)
@@ -1264,11 +1319,7 @@ func projectAliasAddCmd() *cli.Command {
 				entry.Cloudflare = boolPtr(true)
 			}
 
-			// Guard nil map
-			if project.Environment.Alias == nil {
-				project.Environment.Alias = make(map[string]config.AliasEntry)
-			}
-			project.Environment.Alias[serviceName] = entry
+			project.Environment.Alias = config.SetAlias(project.Environment.Alias, entry)
 
 			if err := config.WriteForgeRC(loc.Dir, project); err != nil {
 				return err
@@ -1277,9 +1328,9 @@ func projectAliasAddCmd() *cli.Command {
 			// Compute domain for display
 			var domain string
 			if alias == "" {
-				domain = project.Code + ".local"
+				domain = project.Code + bind.LocalTLD
 			} else {
-				domain = alias + "." + project.Code + ".local"
+				domain = alias + "." + project.Code + bind.LocalTLD
 			}
 			if path != "" {
 				domain += path
@@ -1302,7 +1353,7 @@ func projectAliasAddCmd() *cli.Command {
 				ui.TitleStyle.Render(scheme),
 				cfLabel)
 
-			autoBindProject(project)
+			autoBindProject(project, loc.Dir)
 
 			return nil
 		},
@@ -1331,11 +1382,7 @@ func projectAliasRemoveCmd() *cli.Command {
 				}
 
 				// Build sorted list of service names
-				names := make([]string, 0, len(project.Environment.Alias))
-				for k := range project.Environment.Alias {
-					names = append(names, k)
-				}
-				sort.Strings(names)
+				names := config.AliasServiceNames(project.Environment.Alias)
 
 				options := make([]huh.Option[string], len(names))
 				for i, n := range names {
@@ -1371,15 +1418,12 @@ func projectAliasRemoveCmd() *cli.Command {
 					return nil
 				}
 			} else {
-				if project.Environment.Alias == nil {
-					return fmt.Errorf("alias %q not found", serviceName)
-				}
-				if _, exists := project.Environment.Alias[serviceName]; !exists {
+				if !config.HasAlias(project.Environment.Alias, serviceName) {
 					return fmt.Errorf("alias %q not found", serviceName)
 				}
 			}
 
-			delete(project.Environment.Alias, serviceName)
+			project.Environment.Alias = config.RemoveAlias(project.Environment.Alias, serviceName)
 
 			if err := config.WriteForgeRC(loc.Dir, project); err != nil {
 				return err
@@ -1390,7 +1434,7 @@ func projectAliasRemoveCmd() *cli.Command {
 				ui.CmdStyle.Render(serviceName),
 				ui.DescStyle.Render("removed"))
 
-			autoBindProject(project)
+			autoBindProject(project, loc.Dir)
 
 			return nil
 		},
@@ -1412,19 +1456,16 @@ func projectAliasInfoCmd() *cli.Command {
 
 			if serviceName != "" {
 				// Show single alias
-				if project.Environment.Alias == nil {
-					return fmt.Errorf("alias %q not found", serviceName)
-				}
-				entry, exists := project.Environment.Alias[serviceName]
-				if !exists {
+				entry := config.FindAlias(project.Environment.Alias, serviceName)
+				if entry == nil {
 					return fmt.Errorf("alias %q not found", serviceName)
 				}
 
 				var domain string
 				if entry.Alias == nil {
-					domain = project.Code + ".local"
+					domain = project.Code + bind.LocalTLD
 				} else {
-					domain = *entry.Alias + "." + project.Code + ".local"
+					domain = *entry.Alias + "." + project.Code + bind.LocalTLD
 				}
 				https := entry.HTTPS == nil || *entry.HTTPS
 				httpsLabel := "yes"
@@ -1442,6 +1483,14 @@ func projectAliasInfoCmd() *cli.Command {
 				fmt.Println("    " + ui.DescStyle.Render("Domain:") + "     " + ui.CmdStyle.Render(domain))
 				if entry.Path != "" {
 					fmt.Println("    " + ui.DescStyle.Render("Path:") + "       " + ui.CmdStyle.Render(entry.Path))
+					fpLabel := "no (strip prefix)"
+					if entry.ForwardPathname != nil && *entry.ForwardPathname {
+						fpLabel = "yes"
+					}
+					fmt.Println("    " + ui.DescStyle.Render("Forward:") + "    " + ui.CmdStyle.Render(fpLabel))
+				}
+				if entry.TargetPath != "" {
+					fmt.Println("    " + ui.DescStyle.Render("Target path:") + " " + ui.CmdStyle.Render(entry.TargetPath))
 				}
 				fmt.Println("    " + ui.DescStyle.Render("HTTPS:") + "      " + ui.CmdStyle.Render(httpsLabel))
 				if entry.Cloudflare != nil && *entry.Cloudflare {
@@ -1509,7 +1558,7 @@ func projectAliasInfoCmd() *cli.Command {
 
 // --- Auto-bind helpers ---
 
-func autoBindProject(project config.ForgeProject) {
+func autoBindProject(project config.ForgeProject, projectDir string) {
 	if len(project.Environment.Alias) == 0 {
 		autoUnbindProject(project)
 		return
@@ -1518,6 +1567,14 @@ func autoBindProject(project config.ForgeProject) {
 		fmt.Println("  " + ui.WarningStyle.Render("auto-bind skipped: "+err.Error()))
 		return
 	}
+
+	// Warn if alias keys don't match container names
+	if composeFile, cfErr := docker.ResolveComposeFile(projectDir, project.Environment.ComposeFile); cfErr == nil {
+		for _, w := range docker.CheckAliasKeys(composeFile, config.AliasServiceNames(project.Environment.Alias)) {
+			fmt.Println("  " + ui.WarningStyle.Render("⚠ "+w))
+		}
+	}
+
 	result, err := bind.Bind(project)
 	if err != nil {
 		fmt.Println("  " + ui.WarningStyle.Render("auto-bind failed: "+err.Error()))

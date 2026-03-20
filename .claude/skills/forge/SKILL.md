@@ -64,21 +64,25 @@ Located in the project root. Auto-discovered by walking up from cwd, stopping at
       "pre_destroy": [],
       "post_destroy": []
     },
-    "alias": {
-      "myproject-frontend": {
+    "alias": [
+      {
+        "service": "myproject-frontend",
         "port": 5173,
         "alias": null,
         "https": true,
         "cloudflare": true
       },
-      "myproject-backend": {
+      {
+        "service": "myproject-backend",
         "port": 3000,
         "alias": "backend",
         "path": "/api",
+        "forward_pathname": false,
+        "target_path": "/v2",
         "https": true,
         "cloudflare": false
       }
-    }
+    ]
   }
 }
 ```
@@ -92,15 +96,18 @@ Located in the project root. Auto-discovered by walking up from cwd, stopping at
 | `description` | no | string | Project description |
 | `environment.compose_file` | no | string | Relative path to compose file. Empty = auto-detect (`compose.yaml` > `compose.yml` > `docker-compose.yml` > `docker-compose.yaml`) |
 | `environment.hooks.*` | no | string[] | Shell commands run via `sh -c` before/after compose operations |
-| `environment.alias` | no | map | Keys are Docker Compose service names |
+| `environment.alias` | no | array | Array of alias entries (legacy map format auto-migrated) |
 
 ### Alias Entry Fields
 
 | Field | Required | Type | Default | Description |
 |-------|----------|------|---------|-------------|
+| `service` | yes | string | — | Docker Compose service or container name. Pattern: `^[a-zA-Z0-9][a-zA-Z0-9_-]*$` |
 | `port` | yes | int (1-65535) | — | Container port to route to |
-| `alias` | no | string or null | null | `null` = `<code>.local`, `"sub"` = `sub.<code>.local` |
-| `path` | no | string | — | Path prefix for routing (e.g., `/api`). Must start with `/`, no trailing `/`. Pattern: `^/[a-zA-Z0-9/_-]+$` |
+| `alias` | no | string or null | null | `null` = `<code>.test`, `"sub"` = `sub.<code>.test` |
+| `path` | no | string | — | Frontend path prefix for routing (e.g., `/api`). Must start with `/`, no trailing `/`. Pattern: `^/[a-zA-Z0-9/_-]+$` |
+| `forward_pathname` | no | bool | false | Forward path prefix to backend as-is (default: strip prefix before forwarding) |
+| `target_path` | no | string | — | Backend target path appended to the service URL (e.g., `/test`). Same pattern as `path`. |
 | `https` | no | bool | true | Enable HTTPS (requires mkcert certs) |
 | `cloudflare` | no | bool | false | Also create a public Traefik router via Cloudflare tunnel |
 
@@ -110,10 +117,10 @@ Given `code = "myapp"`:
 
 | `alias` | `path` | Local domain |
 |---------|--------|-------------|
-| `null` | — | `myapp.local` |
-| `"api"` | — | `api.myapp.local` |
-| `null` | `"/api"` | `myapp.local/api` (with StripPrefix) |
-| `"api"` | `"/v2"` | `api.myapp.local/v2` (with StripPrefix) |
+| `null` | — | `myapp.test` |
+| `"api"` | — | `api.myapp.test` |
+| `null` | `"/api"` | `myapp.test/api` (with StripPrefix unless `forward_pathname: true`) |
+| `"api"` | `"/v2"` | `api.myapp.test/v2` (with StripPrefix unless `forward_pathname: true`) |
 
 With Cloudflare tunnel domain `dev.example.com` and `cloudflare: true`:
 
@@ -121,6 +128,20 @@ With Cloudflare tunnel domain `dev.example.com` and `cloudflare: true`:
 |---------|--------------|
 | `null` | `myapp.dev.example.com` |
 | `"api"` | `api.myapp.dev.example.com` |
+
+### Backend Target Path (`target_path`)
+
+- `path` = **frontend** — Traefik matches `PathPrefix` on incoming requests
+- `target_path` = **backend** — appended to the Traefik service URL (`http://container:port/target_path`)
+
+These compose: a request to `myapp.test/api/users` with `path: "/api"`, `forward_pathname: false`, `target_path: "/v2"` strips `/api` then forwards to `http://container:port/v2/users`.
+
+| `path` | `forward_pathname` | `target_path` | Request to `/api/users` → backend receives |
+|--------|--------------------|---------------|---------------------------------------------|
+| `/api` | false | — | `/users` |
+| `/api` | true | — | `/api/users` |
+| `/api` | false | `/v2` | `/v2/users` |
+| — | — | `/test` | `/test/` (all requests forwarded to `/test` base) |
 
 ## All Commands
 
@@ -164,7 +185,7 @@ With Cloudflare tunnel domain `dev.example.com` and `cloudflare: true`:
 
 | Command | Description |
 |---------|-------------|
-| `forge project alias add <service> --port <port>` | Add service alias. Auto-binds domains. Flags: `--alias`, `--path`, `--http`, `--cloudflare`, `--force` |
+| `forge project alias add <service> --port <port>` | Add service alias. Auto-binds domains. Flags: `--alias`, `--path`, `--forward-pathname`, `--target-path`, `--http`, `--cloudflare`, `--force` |
 | `forge project alias remove <service>` | Remove a service alias. Auto-binds/unbinds domains. |
 | `forge project alias info [service]` | Show alias details (one or all) |
 
@@ -183,14 +204,16 @@ All alias commands support interactive mode (run without arguments). `alias add`
 
 ### Adding a service alias to `.forgerc.json`
 
-Edit the `environment.alias` map. Keys must be valid Docker Compose service names matching `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`.
+Edit the `environment.alias` array. Each entry needs a `service` field matching `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`.
 
 ```json
-"alias": {
-  "myapp-web": { "port": 3000, "alias": null },
-  "myapp-api": { "port": 8080, "alias": "api", "path": "/v1" }
-}
+"alias": [
+  { "service": "myapp-web", "port": 3000, "alias": null },
+  { "service": "myapp-api", "port": 8080, "alias": "api", "path": "/v1", "target_path": "/test" }
+]
 ```
+
+The legacy map format (keys as service names) is still read but automatically migrated to array format on write.
 
 If editing `.forgerc.json` directly (not via `forge project alias add`), the user must run `forge project bind` manually to apply routing. Agents should not run bind commands.
 
