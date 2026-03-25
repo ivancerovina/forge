@@ -16,7 +16,7 @@ type EnvironmentCommands struct {
 }
 
 type AliasEntry struct {
-	Service         string   `json:"service"`
+	Container       string   `json:"container"`
 	Port            int      `json:"port"`
 	Alias           *string  `json:"alias"`                      // nil = index (just <code>.test), string = <alias>.<code>.test
 	Path            string   `json:"path,omitempty"`             // e.g. "/api" — path prefix for Traefik routing
@@ -25,6 +25,45 @@ type AliasEntry struct {
 	HTTPS           *bool    `json:"https,omitempty"`            // nil/true = HTTPS, false = HTTP only
 	Cloudflare      *bool    `json:"cloudflare,omitempty"`       // nil/false = local only, true = also bind via CF tunnel
 	BasicAuth       []string `json:"basic_auth,omitempty"`       // bcrypt-hashed "user:hash" pairs for Traefik basicAuth
+	UsesLegacyKey   bool     `json:"-"`                          // true when loaded from deprecated "service" JSON key
+}
+
+// UnmarshalJSON supports both "container" (canonical) and deprecated "service" key.
+func (a *AliasEntry) UnmarshalJSON(data []byte) error {
+	type aliasRaw struct {
+		Container       string   `json:"container"`
+		Service         string   `json:"service"` // deprecated
+		Port            int      `json:"port"`
+		Alias           *string  `json:"alias"`
+		Path            string   `json:"path,omitempty"`
+		ForwardPathname *bool    `json:"forward_pathname,omitempty"`
+		TargetPath      string   `json:"target_path,omitempty"`
+		HTTPS           *bool    `json:"https,omitempty"`
+		Cloudflare      *bool    `json:"cloudflare,omitempty"`
+		BasicAuth       []string `json:"basic_auth,omitempty"`
+	}
+	var raw aliasRaw
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	a.Port = raw.Port
+	a.Alias = raw.Alias
+	a.Path = raw.Path
+	a.ForwardPathname = raw.ForwardPathname
+	a.TargetPath = raw.TargetPath
+	a.HTTPS = raw.HTTPS
+	a.Cloudflare = raw.Cloudflare
+	a.BasicAuth = raw.BasicAuth
+
+	if raw.Container != "" {
+		a.Container = raw.Container
+	} else if raw.Service != "" {
+		a.Container = raw.Service
+		a.UsesLegacyKey = true
+	}
+
+	return nil
 }
 
 type Hooks struct {
@@ -89,7 +128,8 @@ func (e *Environment) UnmarshalJSON(data []byte) error {
 	e.Alias = make([]AliasEntry, 0, len(m))
 	for _, k := range keys {
 		entry := m[k]
-		entry.Service = k
+		entry.Container = k
+		entry.UsesLegacyKey = true
 		e.Alias = append(e.Alias, entry)
 	}
 	return nil
@@ -97,51 +137,61 @@ func (e *Environment) UnmarshalJSON(data []byte) error {
 
 // --- Alias helpers ---
 
-// FindAlias returns a pointer to the AliasEntry with the given service name, or nil.
-func FindAlias(aliases []AliasEntry, service string) *AliasEntry {
+// FindAlias returns a pointer to the AliasEntry with the given container name, or nil.
+func FindAlias(aliases []AliasEntry, container string) *AliasEntry {
 	for i := range aliases {
-		if aliases[i].Service == service {
+		if aliases[i].Container == container {
 			return &aliases[i]
 		}
 	}
 	return nil
 }
 
-// HasAlias returns true if an alias with the given service name exists.
-func HasAlias(aliases []AliasEntry, service string) bool {
-	return FindAlias(aliases, service) != nil
+// HasAlias returns true if an alias with the given container name exists.
+func HasAlias(aliases []AliasEntry, container string) bool {
+	return FindAlias(aliases, container) != nil
 }
 
 // RemoveAlias returns a new slice with the named alias removed.
-func RemoveAlias(aliases []AliasEntry, service string) []AliasEntry {
+func RemoveAlias(aliases []AliasEntry, container string) []AliasEntry {
 	result := make([]AliasEntry, 0, len(aliases))
 	for _, a := range aliases {
-		if a.Service != service {
+		if a.Container != container {
 			result = append(result, a)
 		}
 	}
 	return result
 }
 
-// AliasServiceNames returns a sorted list of service names from the alias slice.
-func AliasServiceNames(aliases []AliasEntry) []string {
+// AliasContainerNames returns a sorted list of container names from the alias slice.
+func AliasContainerNames(aliases []AliasEntry) []string {
 	names := make([]string, len(aliases))
 	for i, a := range aliases {
-		names[i] = a.Service
+		names[i] = a.Container
 	}
 	sort.Strings(names)
 	return names
 }
 
-// SetAlias adds or replaces an alias entry by service name.
+// SetAlias adds or replaces an alias entry by container name.
 func SetAlias(aliases []AliasEntry, entry AliasEntry) []AliasEntry {
 	for i := range aliases {
-		if aliases[i].Service == entry.Service {
+		if aliases[i].Container == entry.Container {
 			aliases[i] = entry
 			return aliases
 		}
 	}
 	return append(aliases, entry)
+}
+
+// HasLegacyServiceKey returns true if any alias was loaded from the deprecated "service" key.
+func HasLegacyServiceKey(aliases []AliasEntry) bool {
+	for _, a := range aliases {
+		if a.UsesLegacyKey {
+			return true
+		}
+	}
+	return false
 }
 
 // IsLegacy returns true if the environment uses the legacy "commands" format.

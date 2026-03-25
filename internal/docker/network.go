@@ -76,6 +76,42 @@ func getContainerID(composeFilePath, projectDir, service string) (string, error)
 	return strings.TrimSpace(string(out)), nil
 }
 
+// ValidateAliasContainers checks that each alias container name exists as a
+// container_name or service name in the compose file. Returns a hard error
+// listing all unresolvable names, or nil if all are valid.
+func ValidateAliasContainers(composeFilePath string, containerNames []string) error {
+	data, err := readComposeData(composeFilePath)
+	if err != nil {
+		return nil // can't validate, skip silently
+	}
+
+	var compose composeFile
+	if err := yaml.Unmarshal(data, &compose); err != nil {
+		return nil
+	}
+
+	// Build set of valid names: service names + container_names
+	valid := make(map[string]bool)
+	for name, svc := range compose.Services {
+		valid[name] = true
+		if svc.ContainerName != "" {
+			valid[svc.ContainerName] = true
+		}
+	}
+
+	var invalid []string
+	for _, cn := range containerNames {
+		if !valid[cn] {
+			invalid = append(invalid, cn)
+		}
+	}
+
+	if len(invalid) > 0 {
+		return fmt.Errorf("alias container name(s) not found in compose file: %s", strings.Join(invalid, ", "))
+	}
+	return nil
+}
+
 // CheckAliasKeys checks whether .forgerc.json alias keys match compose service
 // names instead of container names. Returns warnings for any alias key that
 // matches a service name that has a different container_name set — meaning
@@ -93,7 +129,7 @@ func CheckAliasKeys(composeFilePath string, aliasKeys []string) []string {
 
 	// Build lookup maps
 	serviceNames := make(map[string]string) // service name → container_name (if set)
-	containerNames := make(map[string]bool)  // all known container names
+	containerNames := make(map[string]bool) // all known container names
 	for name, svc := range compose.Services {
 		serviceNames[name] = svc.ContainerName
 		if svc.ContainerName != "" {

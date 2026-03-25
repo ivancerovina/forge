@@ -55,8 +55,8 @@ Every `.forgerc.json` written by forge includes a `$schema` field pointing to th
       "post_destroy": []
     },
     "alias": [
-      { "service": "myproject-frontend", "port": 5173, "alias": null, "cloudflare": true },
-      { "service": "myproject-backend", "port": 3000, "alias": "backend", "path": "/api", "target_path": "/v2" }
+      { "container": "myproject-frontend", "port": 5173, "alias": null, "cloudflare": true },
+      { "container": "myproject-backend", "port": 3000, "alias": "backend", "path": "/api", "target_path": "/v2" }
     ]
   }
 }
@@ -65,7 +65,7 @@ Every `.forgerc.json` written by forge includes a `$schema` field pointing to th
 - `environment.compose_file` — path to compose file (relative to project dir). Omit or leave empty for auto-detection (`compose.yaml` > `compose.yml` > `docker-compose.yml` > `docker-compose.yaml`).
 - `environment.hooks` — shell commands run before/after native Docker Compose operations
 - `environment.alias` — array of alias entries defining Traefik routing rules (legacy map format auto-migrated on write):
-  - `service: "name"` → Docker Compose service/container name
+  - `container: "name"` → Docker container name (deprecated `service` key still accepted)
   - `alias: null` → `<project-code>.test` (index, no subdomain)
   - `alias: "backend"` → `backend.<project-code>.test`
   - `path: "/api"` → frontend path prefix routing with StripPrefix middleware

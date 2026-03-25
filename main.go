@@ -647,9 +647,15 @@ func projectBindCmd() *cli.Command {
 				return fmt.Errorf("no aliases defined in .forgerc.json — add entries to environment.alias first")
 			}
 
-			// Warn if alias keys don't match container names
+			// Warn about deprecated "service" key
+			warnLegacyServiceKey(project.Environment.Alias)
+
+			// Validate alias container names exist in compose file
 			if composeFile, cfErr := docker.ResolveComposeFile(loc.Dir, project.Environment.ComposeFile); cfErr == nil {
-				for _, w := range docker.CheckAliasKeys(composeFile, config.AliasServiceNames(project.Environment.Alias)) {
+				if err := docker.ValidateAliasContainers(composeFile, config.AliasContainerNames(project.Environment.Alias)); err != nil {
+					return err
+				}
+				for _, w := range docker.CheckAliasKeys(composeFile, config.AliasContainerNames(project.Environment.Alias)) {
 					fmt.Println("  " + ui.WarningStyle.Render("⚠ "+w))
 				}
 			}
@@ -783,9 +789,10 @@ func startCmd() *cli.Command {
 				fmt.Println("  " + ui.DescStyle.Render("–") + " " + ui.CmdStyle.Render(name) + " " + ui.DescStyle.Render("already on forge-network"))
 			}
 
-			// Warn if alias keys don't match container names
+			// Warn about deprecated "service" key and check alias container names
 			if len(p.Environment.Alias) > 0 {
-				for _, w := range docker.CheckAliasKeys(composeFile, config.AliasServiceNames(p.Environment.Alias)) {
+				warnLegacyServiceKey(p.Environment.Alias)
+				for _, w := range docker.CheckAliasKeys(composeFile, config.AliasContainerNames(p.Environment.Alias)) {
 					fmt.Println("  " + ui.WarningStyle.Render("⚠ "+w))
 				}
 			}
@@ -1120,7 +1127,7 @@ func getContainerState(containerName string) string {
 func projectAliasCmd() *cli.Command {
 	return &cli.Command{
 		Name:  "alias",
-		Usage: "Manage project service aliases",
+		Usage: "Manage project aliases",
 		Commands: []*cli.Command{
 			projectAliasAddCmd(),
 			projectAliasRemoveCmd(),
@@ -1132,7 +1139,7 @@ func projectAliasCmd() *cli.Command {
 func projectAliasAddCmd() *cli.Command {
 	return &cli.Command{
 		Name:  "add",
-		Usage: "Add a service alias",
+		Usage: "Add a container alias",
 		Flags: []cli.Flag{
 			&cli.IntFlag{Name: "port", Aliases: []string{"P"}, Usage: "Service port"},
 			&cli.StringFlag{Name: "alias", Aliases: []string{"a"}, Usage: "Subdomain (omit for index domain)"},
@@ -1150,9 +1157,9 @@ func projectAliasAddCmd() *cli.Command {
 			}
 			project := loc.Project
 
-			serviceName := cmd.Args().First()
+			containerName := cmd.Args().First()
 			portSet := cmd.IsSet("port")
-			interactive := serviceName == "" && !portSet
+			interactive := containerName == "" && !portSet
 
 			var port int
 			var alias string
@@ -1170,9 +1177,9 @@ func projectAliasAddCmd() *cli.Command {
 				form := huh.NewForm(
 					huh.NewGroup(
 						huh.NewInput().
-							Title("Service name").
-							Value(&serviceName).
-							Validate(func(s string) error { return config.ValidateServiceName(s) }),
+							Title("Container name").
+							Value(&containerName).
+							Validate(func(s string) error { return config.ValidateContainerName(s) }),
 						huh.NewInput().
 							Title("Port").
 							Value(&portStr).
@@ -1245,12 +1252,12 @@ func projectAliasAddCmd() *cli.Command {
 				}
 
 				// Check for existing entry
-				if config.HasAlias(project.Environment.Alias, serviceName) {
+				if config.HasAlias(project.Environment.Alias, containerName) {
 					var overwrite bool
 					confirmForm := huh.NewForm(
 						huh.NewGroup(
 							huh.NewConfirm().
-								Title(fmt.Sprintf("Alias for %q already exists. Overwrite?", serviceName)).
+								Title(fmt.Sprintf("Alias for %q already exists. Overwrite?", containerName)).
 								Affirmative("Yes").
 								Negative("No").
 								Value(&overwrite),
@@ -1265,8 +1272,8 @@ func projectAliasAddCmd() *cli.Command {
 				}
 			} else {
 				// Non-interactive mode
-				if serviceName == "" {
-					return fmt.Errorf("service name is required as a positional argument")
+				if containerName == "" {
+					return fmt.Errorf("container name is required as a positional argument")
 				}
 				if !portSet {
 					return fmt.Errorf("--port is required")
@@ -1280,7 +1287,7 @@ func projectAliasAddCmd() *cli.Command {
 				https = !cmd.Bool("http")
 				cloudflare = cmd.Bool("cloudflare")
 
-				if err := config.ValidateServiceName(serviceName); err != nil {
+				if err := config.ValidateContainerName(containerName); err != nil {
 					return err
 				}
 				if err := config.ValidatePort(port); err != nil {
@@ -1297,13 +1304,13 @@ func projectAliasAddCmd() *cli.Command {
 				}
 
 				// Check for existing entry
-				if config.HasAlias(project.Environment.Alias, serviceName) && !cmd.Bool("force") {
-					return fmt.Errorf("alias for %q already exists (use --force to overwrite)", serviceName)
+				if config.HasAlias(project.Environment.Alias, containerName) && !cmd.Bool("force") {
+					return fmt.Errorf("alias for %q already exists (use --force to overwrite)", containerName)
 				}
 			}
 
 			// Build entry
-			entry := config.AliasEntry{Service: serviceName, Port: port, Path: path, TargetPath: targetPath}
+			entry := config.AliasEntry{Container: containerName, Port: port, Path: path, TargetPath: targetPath}
 			if alias == "" {
 				entry.Alias = nil
 			} else {
@@ -1347,7 +1354,7 @@ func projectAliasAddCmd() *cli.Command {
 
 			fmt.Printf("  %s %s  %d → %s  %s%s\n",
 				ui.SuccessStyle.Render("✓"),
-				ui.CmdStyle.Render(serviceName),
+				ui.CmdStyle.Render(containerName),
 				port,
 				ui.DescStyle.Render(domain),
 				ui.TitleStyle.Render(scheme),
@@ -1364,7 +1371,7 @@ func projectAliasRemoveCmd() *cli.Command {
 	return &cli.Command{
 		Name:    "remove",
 		Aliases: []string{"rm"},
-		Usage:   "Remove a service alias",
+		Usage:   "Remove a container alias",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			loc, err := config.FindForgeRC(".")
 			if err != nil {
@@ -1372,8 +1379,8 @@ func projectAliasRemoveCmd() *cli.Command {
 			}
 			project := loc.Project
 
-			serviceName := cmd.Args().First()
-			interactive := serviceName == ""
+			containerName := cmd.Args().First()
+			interactive := containerName == ""
 
 			if interactive {
 				if len(project.Environment.Alias) == 0 {
@@ -1381,8 +1388,8 @@ func projectAliasRemoveCmd() *cli.Command {
 					return nil
 				}
 
-				// Build sorted list of service names
-				names := config.AliasServiceNames(project.Environment.Alias)
+				// Build sorted list of container names
+				names := config.AliasContainerNames(project.Environment.Alias)
 
 				options := make([]huh.Option[string], len(names))
 				for i, n := range names {
@@ -1394,7 +1401,7 @@ func projectAliasRemoveCmd() *cli.Command {
 						huh.NewSelect[string]().
 							Title("Select alias to remove").
 							Options(options...).
-							Value(&serviceName),
+							Value(&containerName),
 					),
 				)
 				if err := form.Run(); err != nil {
@@ -1405,7 +1412,7 @@ func projectAliasRemoveCmd() *cli.Command {
 				confirmForm := huh.NewForm(
 					huh.NewGroup(
 						huh.NewConfirm().
-							Title(fmt.Sprintf("Remove alias for %q?", serviceName)).
+							Title(fmt.Sprintf("Remove alias for %q?", containerName)).
 							Affirmative("Yes").
 							Negative("No").
 							Value(&confirm),
@@ -1418,12 +1425,12 @@ func projectAliasRemoveCmd() *cli.Command {
 					return nil
 				}
 			} else {
-				if !config.HasAlias(project.Environment.Alias, serviceName) {
-					return fmt.Errorf("alias %q not found", serviceName)
+				if !config.HasAlias(project.Environment.Alias, containerName) {
+					return fmt.Errorf("alias %q not found", containerName)
 				}
 			}
 
-			project.Environment.Alias = config.RemoveAlias(project.Environment.Alias, serviceName)
+			project.Environment.Alias = config.RemoveAlias(project.Environment.Alias, containerName)
 
 			if err := config.WriteForgeRC(loc.Dir, project); err != nil {
 				return err
@@ -1431,7 +1438,7 @@ func projectAliasRemoveCmd() *cli.Command {
 
 			fmt.Printf("  %s %s  %s\n",
 				ui.SuccessStyle.Render("✓"),
-				ui.CmdStyle.Render(serviceName),
+				ui.CmdStyle.Render(containerName),
 				ui.DescStyle.Render("removed"))
 
 			autoBindProject(project, loc.Dir)
@@ -1452,13 +1459,13 @@ func projectAliasInfoCmd() *cli.Command {
 			}
 			project := loc.Project
 
-			serviceName := cmd.Args().First()
+			containerName := cmd.Args().First()
 
-			if serviceName != "" {
+			if containerName != "" {
 				// Show single alias
-				entry := config.FindAlias(project.Environment.Alias, serviceName)
+				entry := config.FindAlias(project.Environment.Alias, containerName)
 				if entry == nil {
-					return fmt.Errorf("alias %q not found", serviceName)
+					return fmt.Errorf("alias %q not found", containerName)
 				}
 
 				var domain string
@@ -1478,7 +1485,7 @@ func projectAliasInfoCmd() *cli.Command {
 					cfLabel = "yes"
 				}
 
-				fmt.Println("  " + ui.CmdStyle.Render(serviceName))
+				fmt.Println("  " + ui.CmdStyle.Render(containerName))
 				fmt.Println("    " + ui.DescStyle.Render("Port:") + "       " + ui.CmdStyle.Render(strconv.Itoa(entry.Port)))
 				fmt.Println("    " + ui.DescStyle.Render("Domain:") + "     " + ui.CmdStyle.Render(domain))
 				if entry.Path != "" {
@@ -1556,6 +1563,15 @@ func projectAliasInfoCmd() *cli.Command {
 	}
 }
 
+// --- Deprecation warnings ---
+
+func warnLegacyServiceKey(aliases []config.AliasEntry) {
+	if config.HasLegacyServiceKey(aliases) {
+		fmt.Println("  " + ui.WarningStyle.Render(
+			`⚠ alias uses deprecated "service" field — rename to "container" in .forgerc.json`))
+	}
+}
+
 // --- Auto-bind helpers ---
 
 func autoBindProject(project config.ForgeProject, projectDir string) {
@@ -1570,7 +1586,7 @@ func autoBindProject(project config.ForgeProject, projectDir string) {
 
 	// Warn if alias keys don't match container names
 	if composeFile, cfErr := docker.ResolveComposeFile(projectDir, project.Environment.ComposeFile); cfErr == nil {
-		for _, w := range docker.CheckAliasKeys(composeFile, config.AliasServiceNames(project.Environment.Alias)) {
+		for _, w := range docker.CheckAliasKeys(composeFile, config.AliasContainerNames(project.Environment.Alias)) {
 			fmt.Println("  " + ui.WarningStyle.Render("⚠ "+w))
 		}
 	}
@@ -1613,7 +1629,7 @@ func autoUnbindProject(project config.ForgeProject) {
 // --- Pointer helpers ---
 
 func stringPtr(s string) *string { return &s }
-func boolPtr(b bool) *bool { return &b }
+func boolPtr(b bool) *bool       { return &b }
 
 // --- Git helpers ---
 

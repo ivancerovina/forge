@@ -76,12 +76,22 @@
               "description": "Array of alias entries (preferred format)",
               "items": {
                 "type": "object",
-                "required": ["service", "port"],
+                "required": ["port"],
+                "oneOf": [
+                  { "required": ["container"] },
+                  { "required": ["service"] }
+                ],
                 "properties": {
+                  "container": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
+                    "description": "Docker container name (container_name or service name from compose file)"
+                  },
                   "service": {
                     "type": "string",
                     "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-                    "description": "Docker Compose service or container name"
+                    "description": "Deprecated — use 'container' instead",
+                    "deprecated": true
                   },
                   "port": {
                     "type": "integer",

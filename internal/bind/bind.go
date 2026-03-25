@@ -46,7 +46,7 @@ type UnbindResult struct {
 func ComputeBindings(project config.ForgeProject, cloudflareDomain string) []DomainBinding {
 	var bindings []DomainBinding
 	for _, entry := range project.Environment.Alias {
-		container := entry.Service
+		container := entry.Container
 
 		// Local binding (always generated)
 		var localDomain string
@@ -97,7 +97,7 @@ func Bind(project config.ForgeProject) (*BindResult, error) {
 	if globalCfg.CloudflareDomain == "" {
 		for _, entry := range project.Environment.Alias {
 			if entry.Cloudflare != nil && *entry.Cloudflare {
-				return nil, fmt.Errorf("alias %q has cloudflare enabled but no cloudflare_domain is configured — run: forge tunnel set-domain <domain>", entry.Service)
+				return nil, fmt.Errorf("alias %q has cloudflare enabled but no cloudflare_domain is configured — run: forge tunnel set-domain <domain>", entry.Container)
 			}
 		}
 	}

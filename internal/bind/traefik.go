@@ -14,8 +14,8 @@ import (
 type traefikDynamicConfig struct {
 	HTTP struct {
 		Routers     map[string]traefikRouter     `yaml:"routers"`
-		Services    map[string]traefikService     `yaml:"services"`
-		Middlewares map[string]traefikMiddleware   `yaml:"middlewares,omitempty"`
+		Services    map[string]traefikService    `yaml:"services"`
+		Middlewares map[string]traefikMiddleware `yaml:"middlewares,omitempty"`
 	} `yaml:"http"`
 }
 

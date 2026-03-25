@@ -9,7 +9,7 @@ import (
 var pathRegexp = regexp.MustCompile(`^[a-zA-Z0-9/_-]+$`)
 
 var CodeRegexp = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$`)
-var serviceNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+var containerNameRegexp = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
 func ValidateName(name string) error {
 	name = strings.TrimSpace(name)
@@ -29,12 +29,12 @@ func ValidateCode(code string) error {
 	return nil
 }
 
-func ValidateServiceName(name string) error {
+func ValidateContainerName(name string) error {
 	if name == "" {
-		return fmt.Errorf("service name cannot be empty")
+		return fmt.Errorf("container name cannot be empty")
 	}
-	if !serviceNameRegexp.MatchString(name) {
-		return fmt.Errorf("service name must start with a letter or number and contain only letters, numbers, hyphens, and underscores")
+	if !containerNameRegexp.MatchString(name) {
+		return fmt.Errorf("container name must start with a letter or number and contain only letters, numbers, hyphens, and underscores")
 	}
 	return nil
 }
