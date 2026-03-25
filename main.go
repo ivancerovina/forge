@@ -750,8 +750,9 @@ func projectUnbindCmd() *cli.Command {
 
 func startCmd() *cli.Command {
 	return &cli.Command{
-		Name:  "start",
-		Usage: "Start the project environment",
+		Name:    "start",
+		Aliases: []string{"up"},
+		Usage:   "Start the project environment",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			loc, err := config.FindForgeRC(".")
 			if err != nil {
@@ -816,6 +817,7 @@ func startCmd() *cli.Command {
 func stopCmd() *cli.Command {
 	return &cli.Command{
 		Name:      "stop",
+		Aliases:   []string{"down"},
 		Usage:     "Stop the project environment",
 		ArgsUsage: "[all|<project name>]",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
