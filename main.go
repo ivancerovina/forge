@@ -20,7 +20,7 @@ import (
 	"github.com/ivancerovina/forge/internal/ui"
 )
 
-var version = "0.1.0"
+var version = "0.1.1"
 
 func main() {
 	if os.Getuid() == 0 {

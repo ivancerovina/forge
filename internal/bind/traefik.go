@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -71,15 +72,24 @@ func writeTraefikConfig(project config.ForgeProject, bindings []DomainBinding) e
 	hasCerts := system.CertsAvailable()
 
 	for _, b := range bindings {
-		serviceKey := project.Code + "-" + b.Container
-		routerKey := serviceKey
+		// Service key: unique per backend endpoint (container + port + target path)
+		serviceKey := fmt.Sprintf("%s-%s-%d", project.Code, b.Container, b.Port)
+		if b.TargetPath != "" {
+			serviceKey += "-" + sanitizeKeyPart(b.TargetPath)
+		}
+
+		// Router key: unique per routing rule (domain + path)
+		routerKey := sanitizeKeyPart(b.Domain)
+		if b.Path != "" {
+			routerKey += "-" + sanitizeKeyPart(b.Path)
+		}
 		if b.Public {
-			routerKey = serviceKey + "-cf"
+			routerKey += "-cf"
 		}
 
 		rule := fmt.Sprintf("Host(`%s`)", b.Domain)
 		if b.Path != "" {
-			rule = fmt.Sprintf("Host(`%s`) && PathPrefix(`%s`)", b.Domain, b.Path)
+			rule = fmt.Sprintf("Host(`%s`) && (PathPrefix(`%s/`) || Path(`%s`))", b.Domain, b.Path, b.Path)
 		}
 
 		router := traefikRouter{
@@ -160,6 +170,15 @@ func writeTraefikConfig(project config.ForgeProject, bindings []DomainBinding) e
 	}
 
 	return nil
+}
+
+// sanitizeKeyPart converts a domain or path fragment into a safe Traefik key part.
+// e.g. "fabriq.test" → "fabriq-test", "/api/v2" → "api-v2"
+func sanitizeKeyPart(s string) string {
+	s = strings.TrimPrefix(s, "/")
+	s = strings.ReplaceAll(s, "/", "-")
+	s = strings.ReplaceAll(s, ".", "-")
+	return s
 }
 
 func removeTraefikConfig(projectCode string) error {

@@ -168,7 +168,8 @@ func RegenerateCerts() error {
 	// Collect domains: start with *.test
 	domains := []string{"*.test"}
 
-	// Add *.<code>.test for each registered project
+	// Add <code>.test and *.<code>.test for each registered project
+	// Both are needed: wildcards don't cover the bare domain.
 	paths, err := config.ReadProjects()
 	if err == nil {
 		for _, p := range paths {
@@ -176,7 +177,7 @@ func RegenerateCerts() error {
 			if err != nil {
 				continue
 			}
-			domains = append(domains, "*."+proj.Code+".test")
+			domains = append(domains, proj.Code+".test", "*."+proj.Code+".test")
 		}
 	}
 
