@@ -9,12 +9,6 @@ import (
 	"strings"
 )
 
-type EnvironmentCommands struct {
-	Start   []string `json:"start"`
-	Stop    []string `json:"stop"`
-	Destroy []string `json:"destroy"`
-}
-
 type AliasEntry struct {
 	Container       string   `json:"container"`
 	Port            int      `json:"port"`
@@ -66,30 +60,16 @@ func (a *AliasEntry) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type Hooks struct {
-	PreStart    []string `json:"pre_start,omitempty"`
-	PostStart   []string `json:"post_start,omitempty"`
-	PreStop     []string `json:"pre_stop,omitempty"`
-	PostStop    []string `json:"post_stop,omitempty"`
-	PreDestroy  []string `json:"pre_destroy,omitempty"`
-	PostDestroy []string `json:"post_destroy,omitempty"`
-}
-
 type Environment struct {
-	ComposeFile string               `json:"compose_file,omitempty"`
-	Hooks       Hooks                `json:"hooks,omitempty"`
-	Alias       []AliasEntry         `json:"alias"`
-	Commands    *EnvironmentCommands `json:"commands,omitempty"` // legacy, nil when absent
+	ComposeFile string       `json:"compose_file,omitempty"`
+	Alias       []AliasEntry `json:"alias"`
 }
 
 // UnmarshalJSON supports both the new array format and the legacy map format for Alias.
 func (e *Environment) UnmarshalJSON(data []byte) error {
-	// Intermediate struct with Alias as raw JSON
 	type envRaw struct {
-		ComposeFile string               `json:"compose_file,omitempty"`
-		Hooks       Hooks                `json:"hooks,omitempty"`
-		Alias       json.RawMessage      `json:"alias"`
-		Commands    *EnvironmentCommands `json:"commands,omitempty"`
+		ComposeFile string          `json:"compose_file,omitempty"`
+		Alias       json.RawMessage `json:"alias"`
 	}
 	var raw envRaw
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -97,8 +77,6 @@ func (e *Environment) UnmarshalJSON(data []byte) error {
 	}
 
 	e.ComposeFile = raw.ComposeFile
-	e.Hooks = raw.Hooks
-	e.Commands = raw.Commands
 
 	if len(raw.Alias) == 0 || string(raw.Alias) == "null" {
 		e.Alias = nil
@@ -193,9 +171,6 @@ func HasLegacyServiceKey(aliases []AliasEntry) bool {
 	}
 	return false
 }
-
-// IsLegacy returns true if the environment uses the legacy "commands" format.
-func (e Environment) IsLegacy() bool { return e.Commands != nil }
 
 type ForgeProject struct {
 	Schema      string      `json:"$schema,omitempty"`

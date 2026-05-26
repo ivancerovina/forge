@@ -31,43 +31,6 @@
           "type": "string",
           "description": "Path to Docker Compose file (relative to project dir). If omitted, auto-detected."
         },
-        "hooks": {
-          "type": "object",
-          "description": "Shell commands run before/after Docker Compose operations",
-          "properties": {
-            "pre_start": {
-              "type": "array",
-              "items": { "type": "string" },
-              "description": "Commands run before docker compose up"
-            },
-            "post_start": {
-              "type": "array",
-              "items": { "type": "string" },
-              "description": "Commands run after docker compose up"
-            },
-            "pre_stop": {
-              "type": "array",
-              "items": { "type": "string" },
-              "description": "Commands run before docker compose stop"
-            },
-            "post_stop": {
-              "type": "array",
-              "items": { "type": "string" },
-              "description": "Commands run after docker compose stop"
-            },
-            "pre_destroy": {
-              "type": "array",
-              "items": { "type": "string" },
-              "description": "Commands run before docker compose down"
-            },
-            "post_destroy": {
-              "type": "array",
-              "items": { "type": "string" },
-              "description": "Commands run after docker compose down"
-            }
-          },
-          "additionalProperties": false
-        },
         "alias": {
           "description": "Service alias definitions for Traefik routing. Array format (preferred) or legacy map format.",
           "oneOf": [
@@ -182,25 +145,6 @@
             }
           ]
         },
-        "commands": {
-          "type": "object",
-          "description": "Legacy command format (deprecated — migrate to hooks)",
-          "properties": {
-            "start": {
-              "type": "array",
-              "items": { "type": "string" }
-            },
-            "stop": {
-              "type": "array",
-              "items": { "type": "string" }
-            },
-            "destroy": {
-              "type": "array",
-              "items": { "type": "string" }
-            }
-          },
-          "additionalProperties": false
-        }
       },
       "additionalProperties": false
     }

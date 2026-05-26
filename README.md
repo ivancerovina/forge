@@ -8,14 +8,13 @@ A CLI tool for managing local development projects with Docker Compose and Traef
 
 ## Features
 
-- **One command to start** — `forge start` runs Docker Compose, connects services to a shared network, and shows status.
+- **Stays out of your way** — Run `docker compose up` however you like (foreground, watch, detached); then `forge project attach` wires containers into the shared network.
 - **Local domains** — `forge project bind` writes `/etc/hosts` entries and Traefik routing so `https://my-project.test` just works.
 - **HTTPS by default** — Wildcard TLS via [mkcert](https://github.com/FiloSottile/mkcert) with automatic HTTP-to-HTTPS redirect.
 - **No changes to your compose file** — Services are connected to the shared network at runtime.
 - **Path-based routing** — Route `/api` to a backend and `/` to a frontend on the same domain.
 - **Cloudflare Tunnel support** — Expose services publicly with zero extra compose configuration.
-- **Subdirectory support** — All commands auto-discover `.forgerc.json` by walking up the directory tree, so you can run `forge start` from any subdirectory.
-- **Lifecycle hooks** — Run commands before/after start, stop, and destroy.
+- **Subdirectory support** — All commands auto-discover `.forgerc.json` by walking up the directory tree, so you can run `forge project attach` from any subdirectory.
 
 ## Prerequisites
 
@@ -62,21 +61,25 @@ forge project init -t "My App" -c my-app
 forge project alias add frontend --port 5173
 forge project alias add backend --port 3000 --alias api --path /api
 
-# Start
-forge project start
+# Start your containers (forge does not do this for you)
+docker compose up -d
+
+# Wire them into forge-network so Traefik can route to them
+forge project attach
 
 # Open https://my-app.test
 ```
 
 ## Existing Project
 
-If a project already has a `.forgerc.json` (e.g. cloned from a repo), just register and start it:
+If a project already has a `.forgerc.json` (e.g. cloned from a repo):
 
 ```sh
 cd ~/projects/existing-app
 forge project register
-forge project start
-forge project bind
+forge project bind             # once, to register routes + hosts entries
+docker compose up -d           # start containers however you like
+forge project attach           # connect them to forge-network
 ```
 
 ## Commands
@@ -94,9 +97,7 @@ All project commands work from any subdirectory within the project.
 | Command | Description |
 |---------|-------------|
 | `forge project init` | Create `.forgerc.json` in current directory |
-| `forge project start` | `docker compose up -d`, connect services to forge-network, show status |
-| `forge project stop` | `docker compose stop` (containers kept, restart with `forge project start`) |
-| `forge project destroy` | `docker compose down` (containers and networks removed) |
+| `forge project attach` (alias `link`) | Connect the project's running containers to `forge-network`. Run after `docker compose up`. Idempotent. |
 | `forge project info` | Show project details, service states, and alias overview |
 | `forge project bind` | Write `/etc/hosts` entries and Traefik routing config |
 | `forge project unbind` | Remove `/etc/hosts` entries and Traefik config |
@@ -104,7 +105,7 @@ All project commands work from any subdirectory within the project.
 | `forge project unregister [path]` | Remove project from the global registry |
 | `forge project list` | List all registered projects |
 
-`start`, `stop`, and `destroy` also work as top-level shortcuts (e.g. `forge start`). All project commands run pre/post hooks if configured.
+Forge does not run `docker compose up` / `down` / `stop` — you do that yourself. After containers are running, `forge project attach` connects them to `forge-network` so Traefik can reach them.
 
 **`project init` flags:**
 
@@ -175,15 +176,11 @@ Created by `forge project init` in the project root:
   "code": "my-project",
   "environment": {
     "compose_file": "docker-compose.yml",
-    "hooks": {
-      "pre_start": ["echo 'Starting...'"],
-      "post_start": []
-    },
-    "alias": {
-      "frontend": { "port": 5173, "alias": null, "cloudflare": true },
-      "backend": { "port": 3000, "alias": null, "path": "/api", "cloudflare": true },
-      "docs": { "port": 8080, "alias": "docs", "https": false }
-    }
+    "alias": [
+      { "container": "frontend", "port": 5173, "alias": null, "cloudflare": true },
+      { "container": "backend", "port": 3000, "alias": null, "path": "/api", "cloudflare": true },
+      { "container": "docs", "port": 8080, "alias": "docs", "https": false }
+    ]
   }
 }
 ```
@@ -204,17 +201,7 @@ Alias keys are Docker Compose service names. Given project code `my-project`:
 
 With `cloudflare: true` and domain `dev.example.com`, the same patterns apply to `my-project.dev.example.com`.
 
-You do **not** need to add `forge-network` to your compose file. Forge connects services at runtime and registers DNS aliases so Traefik can reach them by service name.
-
-### Hooks
-
-Shell commands that run before/after Docker Compose operations. Executed sequentially via `sh -c` from the project root. If any command fails, the operation stops.
-
-| Hook | Runs |
-|------|------|
-| `pre_start` / `post_start` | Before/after `docker compose up -d` |
-| `pre_stop` / `post_stop` | Before/after `docker compose stop` |
-| `pre_destroy` / `post_destroy` | Before/after `docker compose down` |
+You do **not** need to add `forge-network` to your compose file. Forge connects services at runtime via `forge project attach` and registers DNS aliases so Traefik can reach them by service name.
 
 ## Development
 

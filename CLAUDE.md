@@ -35,7 +35,7 @@ internal/
 
 ## Project File
 
-`.forgerc.json` — created in the current directory by `forge project init`. Stores project metadata and environment config. Most commands auto-discover `.forgerc.json` by walking up the directory tree from the current directory, stopping at a `.git` boundary or the user's home directory. This means commands like `forge project start` work from any subdirectory within a project.
+`.forgerc.json` — created in the current directory by `forge project init`. Stores project metadata and environment config. Most commands auto-discover `.forgerc.json` by walking up the directory tree from the current directory, stopping at a `.git` boundary or the user's home directory. This means commands like `forge project attach` work from any subdirectory within a project.
 
 Every `.forgerc.json` written by forge includes a `$schema` field pointing to the canonical GitHub-hosted schema. This enables autocompletion and validation in editors that support JSON Schema (VS Code, JetBrains, etc.). The schema file is also written locally to `~/.forge/schemas/forgerc.schema.json` on every `ensureForgeDir()` call.
 ```json
@@ -46,14 +46,6 @@ Every `.forgerc.json` written by forge includes a `$schema` field pointing to th
   "code": "my-project",
   "environment": {
     "compose_file": "docker-compose.yml",
-    "hooks": {
-      "pre_start": [],
-      "post_start": [],
-      "pre_stop": [],
-      "post_stop": [],
-      "pre_destroy": [],
-      "post_destroy": []
-    },
     "alias": [
       { "container": "myproject-frontend", "port": 5173, "alias": null, "cloudflare": true },
       { "container": "myproject-backend", "port": 3000, "alias": "backend", "path": "/api", "target_path": "/v2" }
@@ -63,7 +55,6 @@ Every `.forgerc.json` written by forge includes a `$schema` field pointing to th
 ```
 
 - `environment.compose_file` — path to compose file (relative to project dir). Omit or leave empty for auto-detection (`compose.yaml` > `compose.yml` > `docker-compose.yml` > `docker-compose.yaml`).
-- `environment.hooks` — shell commands run before/after native Docker Compose operations
 - `environment.alias` — array of alias entries defining Traefik routing rules (legacy map format auto-migrated on write):
   - `container: "name"` → Docker container name (deprecated `service` key still accepted)
   - `alias: null` → `<project-code>.test` (index, no subdomain)
@@ -72,7 +63,6 @@ Every `.forgerc.json` written by forge includes a `$schema` field pointing to th
   - `forward_pathname: true` → forward the path prefix to the backend as-is (default strips it)
   - `target_path: "/v2"` → backend target path appended to the service URL (e.g. `http://container:port/v2`)
   - `cloudflare: true` → also creates a public Traefik router via Cloudflare tunnel
-- Legacy `environment.commands` format is still supported with a deprecation warning
 
 ## Build & Install
 
@@ -108,17 +98,15 @@ Initialize a new forge project in the current directory (creates `.forgerc.json`
 - Prompts before overwriting an existing `.forgerc.json`
 - Note: non-interactive mode (`-t`/`-c`) no longer launches any interactive prompts
 
-### `forge project start` / `forge project stop` / `forge project destroy`
+### `forge project attach`
 
-- `forge project start` — runs `docker compose up` in the foreground by default (streams logs). Pass `-d`/`--detach` to run in background, which also auto-connects services to forge-network and shows status. `--watch` enables file-sync/rebuild.
-- `forge project stop [all|<project name>]` — stops the project environment
-  - No argument: stops the project in the current directory (walks up to find `.forgerc.json`)
-  - `all`: stops all registered projects, continuing on failure, prints per-project status
-  - `<project name>`: looks up a registered project by name (case-insensitive) and stops it
-- `forge project destroy` — runs `docker compose down`
-- All three run pre/post hooks if configured
-- All three work from any subdirectory within the project (walks up to find `.forgerc.json`)
-- `forge start`, `forge stop`, `forge destroy` still work as hidden aliases for backward compatibility
+Forge does not start or stop containers — that's `docker compose`'s job. After running `docker compose up`, run `forge project attach` (alias: `link`) to connect the project's running containers to `forge-network` so Traefik can route to them.
+
+- Reads the compose file, iterates services, runs `docker network connect --alias <service> forge-network <containerID>` for each
+- Idempotent: containers already on the network are reported as such, never re-connected
+- Warns if any alias container name doesn't match a compose service or `container_name`
+- Works from any subdirectory within the project (walks up to find `.forgerc.json`)
+- If no running containers are found, prints a hint to run `docker compose up` first
 
 ### `forge project bind` / `forge project unbind`
 

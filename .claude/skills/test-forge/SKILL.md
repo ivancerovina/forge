@@ -20,7 +20,7 @@ Build the forge binary and run structured smoke tests. Since forge has no automa
 - Use a temporary directory for test projects. Clean up after.
 - Do NOT run `forge project bind` or `forge project unbind` — they require sudo for /etc/hosts.
 - Do NOT run `forge setup` — it starts Docker containers.
-- Do NOT run `forge project start/stop/destroy` unless Docker is confirmed running and the user approves.
+- Do NOT run `forge project attach` unless Docker is confirmed running and the user approves (it tries to inspect running containers).
 
 ## Agent Dependencies
 
@@ -122,13 +122,13 @@ Verify: shows project header with name/code. May show errors about Docker — th
 forge project alias add myapp-web --port 3000 --force
 ```
 
-Verify: `environment.alias` array contains entry with `"service": "myapp-web"`, `"port": 3000`.
+Verify: `environment.alias` array contains entry with `"container": "myapp-web"`, `"port": 3000`.
 
 ```bash
 forge project alias add myapp-api --port 8080 --alias api --path /api --force
 ```
 
-Verify: alias entry has `"service": "myapp-api"`, `"alias": "api"`, `"path": "/api"`, `"port": 8080`.
+Verify: alias entry has `"container": "myapp-api"`, `"alias": "api"`, `"path": "/api"`, `"port": 8080`.
 
 #### 4.6 Alias Add with Forward Pathname
 
@@ -144,7 +144,7 @@ Verify: alias entry has `"forward_pathname": true`.
 forge project alias add myapp-backend --port 5542 --target-path /test --force
 ```
 
-Verify: alias entry has `"service": "myapp-backend"`, `"target_path": "/test"`, `"port": 5542`.
+Verify: alias entry has `"container": "myapp-backend"`, `"target_path": "/test"`, `"port": 5542`.
 
 #### 4.7 Alias Info
 

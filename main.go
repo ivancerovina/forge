@@ -38,9 +38,8 @@ func main() {
 			systemInitCmd(),
 			projectCmd(),
 			tunnelCmd(),
-			hiddenAlias(startCmd()),
-			hiddenAlias(stopCmd()),
-			hiddenAlias(destroyCmd()),
+			hiddenAlias(projectAttachCmd()),
+			hiddenAlias(projectBindCmd()),
 		},
 	}
 	if err := root.Run(context.Background(), os.Args); err != nil {
@@ -224,6 +223,13 @@ func systemInitCmd() *cli.Command {
 	}
 }
 
+// hiddenAlias returns a copy of the command with Hidden set to true so it
+// works as a top-level shortcut without cluttering `forge --help`.
+func hiddenAlias(cmd *cli.Command) *cli.Command {
+	cmd.Hidden = true
+	return cmd
+}
+
 func projectCmd() *cli.Command {
 	return &cli.Command{
 		Name:  "project",
@@ -233,21 +239,13 @@ func projectCmd() *cli.Command {
 			registerCmd(),
 			unregisterCmd(),
 			projectListCmd(),
-			startCmd(),
-			stopCmd(),
-			destroyCmd(),
+			projectAttachCmd(),
 			projectInfoCmd(),
 			projectBindCmd(),
 			projectUnbindCmd(),
 			projectAliasCmd(),
 		},
 	}
-}
-
-// hiddenAlias returns a copy of the command with Hidden set to true.
-func hiddenAlias(cmd *cli.Command) *cli.Command {
-	cmd.Hidden = true
-	return cmd
 }
 
 func projectInitCmd() *cli.Command {
@@ -348,7 +346,6 @@ func projectInitCmd() *cli.Command {
 				Description: desc,
 				Code:        code,
 				Environment: config.Environment{
-					Hooks: config.Hooks{},
 					Alias: []config.AliasEntry{},
 				},
 			}
@@ -647,6 +644,13 @@ func projectBindCmd() *cli.Command {
 				return fmt.Errorf("no aliases defined in .forgerc.json — add entries to environment.alias first")
 			}
 
+			// Auto-register the project if it's not in the registry yet.
+			if registered, regErr := config.RegisterProject(loc.Dir); regErr != nil {
+				fmt.Println("  " + ui.WarningStyle.Render("⚠ could not register project: "+regErr.Error()))
+			} else if registered {
+				fmt.Println("  " + ui.DescStyle.Render("Project not in registry — adding ") + ui.CmdStyle.Render(project.Name) + ui.DescStyle.Render("..."))
+			}
+
 			// Warn about deprecated "service" key
 			warnLegacyServiceKey(project.Environment.Alias)
 
@@ -748,15 +752,11 @@ func projectUnbindCmd() *cli.Command {
 	}
 }
 
-func startCmd() *cli.Command {
+func projectAttachCmd() *cli.Command {
 	return &cli.Command{
-		Name:    "start",
-		Aliases: []string{"up"},
-		Usage:   "Start the project environment",
-		Flags: []cli.Flag{
-			&cli.BoolFlag{Name: "watch", Aliases: []string{"w"}, Usage: "Watch for file changes and sync/rebuild (blocks in foreground)"},
-			&cli.BoolFlag{Name: "detach", Aliases: []string{"d"}, Usage: "Run in background (-d); enables post-start network connect, hooks, and status"},
-		},
+		Name:    "attach",
+		Aliases: []string{"link"},
+		Usage:   "Connect the project's running containers to forge-network",
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			loc, err := config.FindForgeRC(".")
 			if err != nil {
@@ -764,26 +764,8 @@ func startCmd() *cli.Command {
 			}
 			p := loc.Project
 
-			// Legacy commands format
-			if p.Environment.IsLegacy() {
-				fmt.Println(ui.WarningStyle.Render("⚠ .forgerc.json uses legacy \"commands\" format. Migrate to \"hooks\" + native compose."))
-				return docker.RunHooks(p.Environment.Commands.Start, loc.Dir)
-			}
-
 			composeFile, err := docker.ResolveComposeFile(loc.Dir, p.Environment.ComposeFile)
 			if err != nil {
-				return err
-			}
-
-			if err := docker.RunHooks(p.Environment.Hooks.PreStart, loc.Dir); err != nil {
-				return err
-			}
-
-			if !cmd.Bool("detach") {
-				return docker.ComposeUpAttached(composeFile, loc.Dir, cmd.Bool("watch"))
-			}
-
-			if err := docker.ComposeUp(composeFile, loc.Dir); err != nil {
 				return err
 			}
 
@@ -798,7 +780,11 @@ func startCmd() *cli.Command {
 				fmt.Println("  " + ui.DescStyle.Render("–") + " " + ui.CmdStyle.Render(name) + " " + ui.DescStyle.Render("already on forge-network"))
 			}
 
-			// Warn about deprecated "service" key and check alias container names
+			if len(connected) == 0 && len(alreadyConnected) == 0 {
+				fmt.Println(ui.DescStyle.Render("No running containers found. Run `docker compose up` first."))
+				return nil
+			}
+
 			if len(p.Environment.Alias) > 0 {
 				warnLegacyServiceKey(p.Environment.Alias)
 				for _, w := range docker.CheckAliasKeys(composeFile, config.AliasContainerNames(p.Environment.Alias)) {
@@ -806,155 +792,7 @@ func startCmd() *cli.Command {
 				}
 			}
 
-			if err := docker.RunHooks(p.Environment.Hooks.PostStart, loc.Dir); err != nil {
-				return err
-			}
-
-			// Display service status
-			fmt.Println()
-			statuses, statusErr := docker.GetServiceStatus(composeFile, loc.Dir)
-			if statusErr == nil && len(statuses) > 0 {
-				displayServiceStatus(statuses)
-			}
-
-			if cmd.Bool("watch") {
-				fmt.Println()
-				fmt.Println(ui.TitleStyle.Render("Watching for changes...") + " " + ui.DescStyle.Render("(Ctrl+C to stop)"))
-				return docker.ComposeWatch(composeFile, loc.Dir)
-			}
-
 			return nil
-		},
-	}
-}
-
-func stopCmd() *cli.Command {
-	return &cli.Command{
-		Name:      "stop",
-		Aliases:   []string{"down"},
-		Usage:     "Stop the project environment",
-		ArgsUsage: "[all|<project name>]",
-		Action: func(ctx context.Context, cmd *cli.Command) error {
-			arg := cmd.Args().First()
-
-			switch {
-			case arg == "":
-				// Default: stop project in current directory
-				loc, err := config.FindForgeRC(".")
-				if err != nil {
-					return err
-				}
-				return stopProject(loc)
-
-			case strings.EqualFold(arg, "all"):
-				return stopAllProjects()
-
-			default:
-				loc, err := config.FindRegisteredProject(arg)
-				if err != nil {
-					return err
-				}
-				return stopProject(loc)
-			}
-		},
-	}
-}
-
-// stopProject stops a single project given its location.
-func stopProject(loc config.ProjectLocation) error {
-	p := loc.Project
-
-	// Legacy commands format
-	if p.Environment.IsLegacy() {
-		fmt.Println(ui.WarningStyle.Render("⚠ .forgerc.json uses legacy \"commands\" format. Migrate to \"hooks\" + native compose."))
-		return docker.RunHooks(p.Environment.Commands.Stop, loc.Dir)
-	}
-
-	composeFile, err := docker.ResolveComposeFile(loc.Dir, p.Environment.ComposeFile)
-	if err != nil {
-		return err
-	}
-
-	if err := docker.RunHooks(p.Environment.Hooks.PreStop, loc.Dir); err != nil {
-		return err
-	}
-
-	if err := docker.ComposeStop(composeFile, loc.Dir); err != nil {
-		return err
-	}
-
-	return docker.RunHooks(p.Environment.Hooks.PostStop, loc.Dir)
-}
-
-// stopAllProjects stops all registered projects, continuing on failure.
-func stopAllProjects() error {
-	paths, err := config.ReadProjects()
-	if err != nil {
-		return fmt.Errorf("could not read projects list: %w", err)
-	}
-
-	if len(paths) == 0 {
-		fmt.Println(ui.DescStyle.Render("No projects registered."))
-		return nil
-	}
-
-	var failed []string
-
-	for _, p := range paths {
-		project, err := config.ReadForgeRC(p)
-		if err != nil {
-			fmt.Println("  " + ui.ErrStyle.Render("✗") + " " + ui.CmdStyle.Render(p) + " " + ui.ErrStyle.Render("could not read .forgerc.json"))
-			failed = append(failed, p)
-			continue
-		}
-
-		loc := config.ProjectLocation{Project: project, Dir: p}
-		fmt.Println("  " + ui.DescStyle.Render("Stopping") + " " + ui.CmdStyle.Render(project.Name) + ui.DescStyle.Render("..."))
-		if err := stopProject(loc); err != nil {
-			fmt.Println("  " + ui.ErrStyle.Render("✗") + " " + ui.CmdStyle.Render(project.Name) + " " + ui.ErrStyle.Render(err.Error()))
-			failed = append(failed, project.Name)
-		} else {
-			fmt.Println("  " + ui.SuccessStyle.Render("✓") + " " + ui.CmdStyle.Render(project.Name) + " " + ui.SuccessStyle.Render("stopped"))
-		}
-	}
-
-	if len(failed) > 0 {
-		return fmt.Errorf("failed to stop %d project(s): %s", len(failed), strings.Join(failed, ", "))
-	}
-	return nil
-}
-
-func destroyCmd() *cli.Command {
-	return &cli.Command{
-		Name:  "destroy",
-		Usage: "Destroy the project environment",
-		Action: func(ctx context.Context, cmd *cli.Command) error {
-			loc, err := config.FindForgeRC(".")
-			if err != nil {
-				return err
-			}
-			p := loc.Project
-
-			// Legacy commands format
-			if p.Environment.IsLegacy() {
-				fmt.Println(ui.WarningStyle.Render("⚠ .forgerc.json uses legacy \"commands\" format. Migrate to \"hooks\" + native compose."))
-				return docker.RunHooks(p.Environment.Commands.Destroy, loc.Dir)
-			}
-
-			composeFile, err := docker.ResolveComposeFile(loc.Dir, p.Environment.ComposeFile)
-			if err != nil {
-				return err
-			}
-
-			if err := docker.RunHooks(p.Environment.Hooks.PreDestroy, loc.Dir); err != nil {
-				return err
-			}
-
-			if err := docker.ComposeDown(composeFile, loc.Dir); err != nil {
-				return err
-			}
-
-			return docker.RunHooks(p.Environment.Hooks.PostDestroy, loc.Dir)
 		},
 	}
 }
