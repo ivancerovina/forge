@@ -753,6 +753,10 @@ func startCmd() *cli.Command {
 		Name:    "start",
 		Aliases: []string{"up"},
 		Usage:   "Start the project environment",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "watch", Aliases: []string{"w"}, Usage: "Watch for file changes and sync/rebuild (blocks in foreground)"},
+			&cli.BoolFlag{Name: "detach", Aliases: []string{"d"}, Usage: "Run in background (-d); enables post-start network connect, hooks, and status"},
+		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			loc, err := config.FindForgeRC(".")
 			if err != nil {
@@ -773,6 +777,10 @@ func startCmd() *cli.Command {
 
 			if err := docker.RunHooks(p.Environment.Hooks.PreStart, loc.Dir); err != nil {
 				return err
+			}
+
+			if !cmd.Bool("detach") {
+				return docker.ComposeUpAttached(composeFile, loc.Dir, cmd.Bool("watch"))
 			}
 
 			if err := docker.ComposeUp(composeFile, loc.Dir); err != nil {
@@ -807,6 +815,12 @@ func startCmd() *cli.Command {
 			statuses, statusErr := docker.GetServiceStatus(composeFile, loc.Dir)
 			if statusErr == nil && len(statuses) > 0 {
 				displayServiceStatus(statuses)
+			}
+
+			if cmd.Bool("watch") {
+				fmt.Println()
+				fmt.Println(ui.TitleStyle.Render("Watching for changes...") + " " + ui.DescStyle.Render("(Ctrl+C to stop)"))
+				return docker.ComposeWatch(composeFile, loc.Dir)
 			}
 
 			return nil

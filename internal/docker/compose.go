@@ -48,6 +48,39 @@ func ComposeUp(composeFile, projectDir string) error {
 	return nil
 }
 
+// ComposeUpAttached runs docker compose up (no -d) for the given compose file.
+// Streams logs in the foreground until the user interrupts (Ctrl+C).
+// If watch is true, adds --watch to also sync/rebuild on file changes.
+func ComposeUpAttached(composeFile, projectDir string, watch bool) error {
+	args := []string{"compose", "-f", composeFile, "up"}
+	if watch {
+		args = append(args, "--watch")
+	}
+	cmd := exec.Command("docker", args...)
+	cmd.Dir = projectDir
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker compose up failed: %w", err)
+	}
+	return nil
+}
+
+// ComposeWatch runs docker compose watch for the given compose file.
+// Blocks in the foreground until the user interrupts (Ctrl+C).
+func ComposeWatch(composeFile, projectDir string) error {
+	cmd := exec.Command("docker", "compose", "-f", composeFile, "watch")
+	cmd.Dir = projectDir
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker compose watch failed: %w", err)
+	}
+	return nil
+}
+
 // ComposeStop runs docker compose stop for the given compose file.
 func ComposeStop(composeFile, projectDir string) error {
 	cmd := exec.Command("docker", "compose", "-f", composeFile, "stop")

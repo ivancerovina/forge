@@ -110,7 +110,7 @@ Initialize a new forge project in the current directory (creates `.forgerc.json`
 
 ### `forge project start` / `forge project stop` / `forge project destroy`
 
-- `forge project start` — runs `docker compose up -d`, auto-connects services to forge-network, shows status
+- `forge project start` — runs `docker compose up` in the foreground by default (streams logs). Pass `-d`/`--detach` to run in background, which also auto-connects services to forge-network and shows status. `--watch` enables file-sync/rebuild.
 - `forge project stop [all|<project name>]` — stops the project environment
   - No argument: stops the project in the current directory (walks up to find `.forgerc.json`)
   - `all`: stops all registered projects, continuing on failure, prints per-project status
