@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/ivancerovina/forge/internal/config"
 )
@@ -148,10 +150,19 @@ func GenerateCerts(forgeDir string) (string, error) {
 	return "generated", nil
 }
 
-// RegenerateCerts regenerates the local certificates with per-project wildcards
-// collected from all registered projects. Called from bind to cover two-level subdomains.
+// RegenerateCerts regenerates the local certificates with explicit per-project
+// SANs. Called from bind/unbind so that Node.js, Go, Java, and other strict TLS
+// verifiers (which reject the *.test wildcard at the TLD level) accept certs
+// for forge-managed domains. The *.test SAN is kept as a fallback for browsers.
+//
+// Source of truth is the Traefik dynamic config directory: every <code>.yml
+// file present means that project is currently bound. extraCodes lets callers
+// include codes whose Traefik config hasn't been written yet (e.g. the project
+// being bound right now).
+//
+// Touches _tls.yml on success so Traefik's file watcher reloads the cert.
 // Does not print to stdout/stderr.
-func RegenerateCerts() error {
+func RegenerateCerts(extraCodes ...string) error {
 	if _, err := exec.LookPath("mkcert"); err != nil {
 		return nil // silently skip if mkcert not installed
 	}
@@ -165,20 +176,25 @@ func RegenerateCerts() error {
 	certPath := filepath.Join(certsDir, "local.pem")
 	keyPath := filepath.Join(certsDir, "local-key.pem")
 
-	// Collect domains: start with *.test
-	domains := []string{"*.test"}
-
-	// Add <code>.test and *.<code>.test for each registered project
-	// Both are needed: wildcards don't cover the bare domain.
-	paths, err := config.ReadProjects()
-	if err == nil {
-		for _, p := range paths {
-			proj, err := config.ReadForgeRC(p)
-			if err != nil {
-				continue
-			}
-			domains = append(domains, proj.Code+".test", "*."+proj.Code+".test")
+	codes := boundProjectCodes(forgeDir)
+	for _, c := range extraCodes {
+		if c != "" {
+			codes[c] = struct{}{}
 		}
+	}
+
+	// Build SAN list: *.test fallback + literal <code>.test + *.<code>.test for
+	// each bound project. Literal entries are required because Node and other
+	// strict verifiers refuse to match a wildcard at the TLD level.
+	sortedCodes := make([]string, 0, len(codes))
+	for c := range codes {
+		sortedCodes = append(sortedCodes, c)
+	}
+	sort.Strings(sortedCodes)
+
+	domains := []string{"*.test"}
+	for _, c := range sortedCodes {
+		domains = append(domains, c+".test", "*."+c+".test")
 	}
 
 	// Run mkcert -install (idempotent)
@@ -198,7 +214,37 @@ func RegenerateCerts() error {
 		return fmt.Errorf("mkcert failed to generate certs: %w", err)
 	}
 
+	// Touch _tls.yml so Traefik's file watcher reloads with the new cert.
+	_ = WriteTLSConfig(forgeDir)
+
 	return nil
+}
+
+// boundProjectCodes scans the Traefik dynamic config directory and returns the
+// set of currently-bound project codes (one per <code>.yml file). Files
+// starting with "_" (e.g. _tls.yml) are skipped.
+func boundProjectCodes(forgeDir string) map[string]struct{} {
+	codes := make(map[string]struct{})
+	traefikDir := filepath.Join(forgeDir, "traefik")
+	entries, err := os.ReadDir(traefikDir)
+	if err != nil {
+		return codes
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".yml") {
+			continue
+		}
+		stem := strings.TrimSuffix(name, ".yml")
+		if stem == "" || strings.HasPrefix(stem, "_") {
+			continue
+		}
+		codes[stem] = struct{}{}
+	}
+	return codes
 }
 
 // WriteTLSConfig writes the Traefik TLS config file.

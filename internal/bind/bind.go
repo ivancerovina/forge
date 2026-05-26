@@ -104,8 +104,10 @@ func Bind(project config.ForgeProject) (*BindResult, error) {
 
 	bindings := ComputeBindings(project, globalCfg.CloudflareDomain)
 
-	// Regenerate certificates with per-project wildcards (non-fatal)
-	_ = system.RegenerateCerts()
+	// Regenerate certificates with explicit per-project SANs (non-fatal).
+	// Pass project.Code so this project is included even on first bind, before
+	// its Traefik config exists on disk.
+	_ = system.RegenerateCerts(project.Code)
 
 	// Collect only local domains for /etc/hosts (skip public bindings)
 	var localDomains []string
@@ -152,6 +154,10 @@ func Unbind(project config.ForgeProject) (*UnbindResult, error) {
 	if err := removeTraefikConfig(project.Code); err != nil {
 		return nil, err
 	}
+
+	// Prune this project's SANs from the shared cert (non-fatal). Runs after
+	// removeTraefikConfig so the filesystem scan no longer sees this project.
+	_ = system.RegenerateCerts()
 
 	path, _ := traefikConfigPath(project.Code)
 
